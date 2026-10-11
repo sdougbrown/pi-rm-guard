@@ -2,10 +2,16 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { createDecisionsBackend, createJevBackend } from "../src/backends.ts";
 
-const choiceResponse = (a: number, b: number, c: number) =>
+const choiceResponse = (approve: number, ask: number, deny: number) =>
 	new Response(
 		JSON.stringify({
-			answers: { action: { probabilities: { A: a, B: b, C: c }, choice: a > 0.5 ? "approve" : b > 0.5 ? "ask" : "deny" } },
+			answers: {
+				action: {
+					// /v1/decisions answers are keyed by positional letters
+					probabilities: { A: approve, B: ask, C: deny },
+					choice: approve > 0.5 ? "approve" : ask > 0.5 ? "ask" : "deny",
+				},
+			},
 		}),
 		{ status: 200, headers: { "content-type": "application/json" } },
 	);
@@ -73,22 +79,50 @@ test("decisions backend maps network failures to errors, not throws", async () =
 
 type ClassifyFn = NonNullable<Parameters<typeof createJevBackend>[1]["classify"]>;
 
-test("jev backend passes state and returns approve on high probability", async () => {
+test("jev backend maps choice answers to approve/deny/defer", async () => {
 	let captured: Record<string, unknown> | undefined;
+	let called = 0;
 	const classify: ClassifyFn = async (state) => {
+		called++;
 		captured = state;
-		return { probability: 0.87 };
+		return { answers: { action: { probabilities: { approve: 0.87, ask: 0.1, deny: 0.03 } } }, stopReason: "stop" };
 	};
 	const backend = createJevBackend(fakeRegistry(), { modelId: "jev-latest", apiKey: undefined, classify });
 	const result = await backend.decide({ command: "rm -rf dist", intent: "delete dist" });
 	assert.deepEqual(result, { action: "approve", probability: 0.87 });
 	assert.equal(captured?.command, "rm -rf dist");
 	assert.equal(captured?.userRequest, "delete dist");
+	assert.equal(called, 1); // choice worked, no bool retry
+
+	const deny = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, classify: async () => ({ answers: { action: { probabilities: { approve: 0.001, ask: 0.001, deny: 0.999 } } }, stopReason: "stop" }) });
+	assert.deepEqual(await deny.decide({ command: "rm -rf /", intent: "i" }), { action: "deny", probability: 0.999 });
+
+	const softDeny = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, classify: async () => ({ answers: { action: { probabilities: { approve: 0.05, ask: 0.05, deny: 0.9 } } }, stopReason: "stop" }) });
+	assert.deepEqual(await softDeny.decide({ command: "rm -rf x", intent: "i" }), { action: "defer", probability: 0.9 });
+});
+
+test("jev backend falls back to bool when choice is rejected", async () => {
+	const questionsSeen: unknown[] = [];
+	const classify: ClassifyFn = async (_state, questions) => {
+		questionsSeen.push(questions);
+		if ("action" in questions) throw new Error("choice unsupported");
+		return { answers: { safe: { probability: 0.7 } }, stopReason: "stop" };
+	};
+	const backend = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, classify });
+	const result = await backend.decide({ command: "rm -rf dist", intent: "i" });
+	assert.deepEqual(result, { action: "approve", probability: 0.7 });
+	assert.equal(questionsSeen.length, 2);
+	assert.ok("action" in questionsSeen[0]);
+	assert.ok("safe" in questionsSeen[1]);
+	// Second call stays in bool mode.
+	await backend.decide({ command: "rm -rf dist", intent: "i" });
+	assert.equal(questionsSeen.length, 3);
+	assert.ok("safe" in questionsSeen[2]);
 });
 
 test("jev backend defers on low probability and surfaces failures as errors", async () => {
-	const backend = createJevBackend(fakeRegistry(), { modelId: "jev-latest", apiKey: undefined, classify: async () => ({ probability: 0.1 }) });
-	assert.deepEqual(await backend.decide({ command: "rm -rf dist", intent: "i" }), { action: "defer", probability: 0.1 });
+	const backend = createJevBackend(fakeRegistry(), { modelId: "jev-latest", apiKey: undefined, classify: async () => ({ answers: { action: { probabilities: { approve: 0.1, ask: 0.85, deny: 0.05 } } }, stopReason: "stop" }) });
+	assert.deepEqual(await backend.decide({ command: "rm -rf dist", intent: "i" }), { action: "defer", probability: 0.85 });
 
 	const failing = createJevBackend(fakeRegistry(), { modelId: "jev-latest", apiKey: undefined, classify: async () => { throw new Error("rate limited"); } });
 	assert.deepEqual(await failing.decide({ command: "rm -rf dist", intent: "i" }), { error: "rate limited" });

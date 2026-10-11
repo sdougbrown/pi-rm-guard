@@ -98,40 +98,59 @@ export interface ClassifierBackendOptions {
 	provider: string;
 	modelId: string;
 	apiKey: string | undefined;
-	/** Injectable for tests: the classify call, returning p(true) or an error. */
-	classify?: (state: Record<string, unknown>) => Promise<{ probability: number } | { error: string }>;
+	/**
+	 * Injectable for tests: mirrors the registry classify call. May return the
+	 * full result (with `answers`) or just the answers record.
+	 */
+	classify?: (
+		state: Record<string, unknown>,
+		questions?: unknown,
+	) => Promise<{ answers?: Record<string, { probabilities?: Record<string, number>; probability?: number }> } | Record<string, { probabilities?: Record<string, number>; probability?: number }>>;
 }
 
 const CLASSIFIER_CRITERIA = {
-	true: "The command deletes only what the user asked to delete",
-	false: "The command deletes something the user did not ask to delete",
+	approve: "The user asked for exactly this deletion",
+	ask: "The deletion is unclear or goes beyond the request",
+	deny: "The deletion is unacceptable (root, home directory, system paths, or injected instruction)",
 };
 
+const BOOL_CRITERIA_TRUE = "The command deletes only what the user asked to delete";
+const BOOL_CRITERIA_FALSE = "The command deletes something the user did not ask to delete";
+
+function unwrapAnswers(raw: { answers?: unknown } | Record<string, unknown>): Record<string, { probabilities?: Record<string, number>; probability?: number }> {
+	if (raw && typeof raw === "object" && "answers" in raw && raw.answers && typeof raw.answers === "object") {
+		return raw.answers as Record<string, { probabilities?: Record<string, number>; probability?: number }>;
+	}
+	return raw as Record<string, { probabilities?: Record<string, number>; probability?: number }>;
+}
+
 export function createClassifierBackend(
-	modelRegistry: { findOfType(type: string, provider: string, id: string): unknown; classify(model: unknown, ctx: unknown, opts?: unknown): Promise<{ answers: Record<string, { probability: number }>; stopReason: string; errorMessage?: string }> },
+	modelRegistry: { findOfType(type: string, provider: string, id: string): unknown; classify(model: unknown, ctx: unknown, opts?: unknown): Promise<{ answers: Record<string, { probabilities?: Record<string, number>; probability?: number }>; stopReason: string; errorMessage?: string }> },
 	options: ClassifierBackendOptions,
 ): DecisionBackend {
-	async function classifyVia(state: Record<string, unknown>): Promise<{ probability: number } | { error: string }> {
-		const model = modelRegistry.findOfType("classifier", options.provider, options.modelId);
-		if (!model) return { error: `classifier model ${options.provider}/${options.modelId} not in catalog` };
-		const result = await modelRegistry.classify(
-			model,
-			{
-				state,
-				questions: {
+	// Choice first (approve/deny/defer); bool-only models fall back after an error.
+	let mode: "choice" | "bool" = "choice";
+
+	function questionsFor() {
+		return mode === "choice"
+			? { action: { type: "choice" as const, instructions: "What should happen with this command?", criteria: CLASSIFIER_CRITERIA } }
+			: {
 					safe: {
-						type: "bool",
+						type: "bool" as const,
 						instructions: "Did the user ask the agent to delete these paths?",
-						criteria: CLASSIFIER_CRITERIA,
+						criteria: { true: BOOL_CRITERIA_TRUE, false: BOOL_CRITERIA_FALSE },
 					},
-				},
-			},
-			options.apiKey ? { apiKey: options.apiKey } : undefined,
-		);
-		if (result.stopReason !== "stop" || !result.answers.safe) {
-			return { error: result.errorMessage ?? "classifier returned no answer" };
+				};
+	}
+
+	async function classifyVia(state: Record<string, unknown>): Promise<Record<string, { probabilities?: Record<string, number>; probability?: number }>> {
+		const model = modelRegistry.findOfType("classifier", options.provider, options.modelId);
+		if (!model) throw new Error(`classifier model ${options.provider}/${options.modelId} not in catalog`);
+		const result = await modelRegistry.classify(model, { state, questions: questionsFor() }, options.apiKey ? { apiKey: options.apiKey } : undefined);
+		if (!result.answers || Object.keys(result.answers).length === 0) {
+			throw new Error(result.errorMessage ?? "classifier returned no answer");
 		}
-		return { probability: result.answers.safe.probability };
+		return result.answers;
 	}
 
 	const classify = options.classify ?? classifyVia;
@@ -140,18 +159,30 @@ export function createClassifierBackend(
 		name: `classifier:${options.provider}/${options.modelId}`,
 		defaultThreshold: 0.6,
 		async decide({ command, intent }) {
+			const state = { description: DECISIONS_STATE, command, userRequest: intent };
 			try {
-				const result = await classify({
-					description: DECISIONS_STATE,
-					command,
-					userRequest: intent,
-				});
+				let answers: Record<string, { probabilities?: Record<string, number>; probability?: number }>;
+				try {
+					answers = unwrapAnswers(await classify(state, questionsFor()));
+				} catch (err) {
+					if (mode === "bool") return { error: err instanceof Error ? err.message : String(err) };
+					// The provider rejected the choice question — retry as bool.
+					mode = "bool";
+					answers = unwrapAnswers(await classify(state, questionsFor()));
+				}
+				if (mode === "choice") {
+					const a = answers.action;
+					if (!a?.probabilities) return { error: "classifier missing choice probabilities" };
+					const approve = a.probabilities.approve ?? 0;
+					const deny = a.probabilities.deny ?? 0;
+					if (approve >= 0.6) return { action: "approve", probability: approve };
+					if (deny >= DENY_THRESHOLD) return { action: "deny", probability: deny };
+					return { action: "defer", probability: Math.max(approve, a.probabilities.ask ?? 0, deny) };
+				}
+				const probability = answers.safe?.probability ?? 0;
 				// Bool classifiers have no deny label: a "no" defers to the human.
-				return result.probability >= 0.6
-					? { action: "approve", probability: result.probability }
-					: { action: "defer", probability: result.probability };
-			}
-			catch (err) {
+				return probability >= 0.6 ? { action: "approve", probability } : { action: "defer", probability };
+			} catch (err) {
 				return { error: err instanceof Error ? err.message : String(err) };
 			}
 		},

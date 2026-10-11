@@ -23,8 +23,9 @@ Three gates run in order. A command is auto-approved only if it passes all of th
      deny ≥0.99, everything else defers.
    - `classifier`: any pi-known classifier model (`typesafe/jev-latest`,
      openrouter, cloudflare clef, llama.cpp router models) via
-     `ctx.modelRegistry.classify()`. Bool answer: yes ≥0.6 approves, no defers
-     (bool classifiers have no deny label).
+     `ctx.modelRegistry.classify()`. Asks the same 3-way choice (approve ≥0.6,
+     deny ≥0.99, else defer) and falls back to a yes/no question for
+     bool-only models (yes approves, no defers).
 
 3. **Verdict** — three outcomes:
    - **approve** (statically eligible + model confident): the call proceeds.

@@ -47,11 +47,11 @@ async function runJev() {
 	let ok = 0;
 	for (const c of cases) {
 		const r = await backend.decide({ command: c.cmd, intent: c.intent });
-		const p = "probability" in r ? r.probability : NaN;
-		const got = p >= backend.defaultThreshold ? "Y" : "n";
-		const pass = got === (c.want === "yes" ? "Y" : "n");
+		const action = "action" in r ? r.action : "error";
+		const want = c.want === "yes" ? "approve" : "no";
+		const pass = action === "approve" ? c.want === "yes" : c.want === "no";
 		if (pass) ok++;
-		console.log(`${pass ? "ok " : "FAIL"} jev p=${p.toFixed(3)} want=${c.want}  ${c.cmd}`);
+		console.log(`${pass ? "ok " : "FAIL"} jev ${action}${"probability" in r ? ` p=${r.probability.toFixed(3)}` : ""} want=${want}  ${c.cmd}`);
 	}
 	return ok;
 }
@@ -71,7 +71,9 @@ function fakeRegistry() {
 			const wire = {
 				model: "jev-latest",
 				state: ctx.state,
-				questions: Object.fromEntries(Object.entries(ctx.questions).map(([id, q]) => [id, { ...q, type: "noul" }])),
+				questions: Object.fromEntries(
+					Object.entries(ctx.questions).map(([id, q]) => [id, (q as { type: string }).type === "bool" ? { ...q, type: "noul" } : q]),
+				),
 			};
 			const res = await fetch("https://api.typesafe.ai/v1/systemone", {
 				method: "POST",
@@ -79,7 +81,7 @@ function fakeRegistry() {
 				body: JSON.stringify(wire),
 			});
 			const json = await res.json();
-			return { answers: { safe: { probability: json.answers?.safe?.noul } }, stopReason: res.ok ? "stop" : "error", errorMessage: res.ok ? undefined : JSON.stringify(json) };
+			return { answers: json.answers ?? {}, stopReason: res.ok ? "stop" : "error", errorMessage: res.ok ? undefined : JSON.stringify(json) };
 		},
 	} as never;
 }
