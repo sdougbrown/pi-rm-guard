@@ -88,9 +88,9 @@ a threshold tweak (`RM_GUARD_THRESHOLD`). Run `npm run eval:live` to check.
 ## Install
 
 ```sh
-pi install npm:pi-rm-guard        # once published
-# or locally:
-pi install ~/Code/pi-rm-guard
+pi install git:github.com/sdougbrown/pi-rm-guard
+# or from npm once published:
+pi install npm:pi-rm-guard
 ```
 
 ## Development
