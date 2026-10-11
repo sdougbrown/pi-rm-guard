@@ -1,0 +1,23 @@
+{
+	"name": "pi-rm-guard",
+	"version": "0.1.0",
+	"description": "Pi extension: auto-approves safe recursive rm commands via a decision model, defers everything else to human approval",
+	"type": "module",
+	"keywords": ["pi-package"],
+	"license": "MIT",
+	"pi": {
+		"extensions": ["./src/index.ts"]
+	},
+	"scripts": {
+		"test": "node --test \"test/*.test.ts\"",
+		"eval:live": "node scripts/eval-live.ts"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		}
+	}
+}
