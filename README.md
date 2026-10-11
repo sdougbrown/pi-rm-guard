@@ -31,13 +31,32 @@ Three gates run in order. A command is auto-approved only if it passes all of th
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RM_GUARD_BACKEND` | `decisions` | `decisions` or `jev` |
-| `RM_GUARD_THRESHOLD` | backend default | minimum p(yes) to auto-approve |
+| `RM_GUARD_BACKEND` | `decisions` | `decisions` (custom /v1/decisions endpoint) or `classifier` (pi-known classifier model) |
+| `RM_GUARD_THRESHOLD` | backend default | minimum p(yes) to auto-approve (decisions 0.85, classifier 0.6) |
 | `RM_GUARD_URL` | `http://localhost:4000/v1/decisions` | decisions endpoint |
 | `RM_GUARD_MODEL` | `gemma4` | decisions model |
 | `RM_GUARD_TIMEOUT_MS` | `1500` | decisions request timeout |
-| `RM_GUARD_JEV_MODEL` | `jev-latest` | classifier model id |
-| `RM_GUARD_JEV_KEY_FILE` | `~/.secrets/jev.key` | key file if `TYPESAFE_API_KEY` is unset |
+| `RM_GUARD_CLASSIFIER` | `typesafe/jev-latest` | `provider/model-id` resolved through pi's model registry |
+| `RM_GUARD_JEV_KEY_FILE` | `~/.secrets/jev.key` | key file if the provider env key is unset |
+
+## Choosing a model
+
+**Classifier backend (recommended, no extra config):** any classifier model pi
+already knows — keys come from pi's credential system (`TYPESAFE_API_KEY`,
+`OPENROUTER_API_KEY`, `/login`, …). Pick one with `RM_GUARD_CLASSIFIER`:
+
+```sh
+RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=typesafe/jev-latest
+RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=openrouter/typesafe/jev-1.13
+RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=llama-cpp/gemma-3-4b-it  # llama.cpp router users
+```
+
+Note the question phrasing is calibrated on the eval set; other models may need
+a threshold tweak (`RM_GUARD_THRESHOLD`). Run `npm run eval:live` to check.
+
+**Decisions backend:** for a llama.cpp-style router exposing a custom
+`/v1/decisions` route with typed yes/no questions and next-token probabilities
+(this is how the `gemma4` calibration was done). Needs the URL and model.
 
 ## Install
 

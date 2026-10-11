@@ -1,16 +1,18 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDecisionsBackend, createJevBackend, type DecisionBackend } from "./backends.ts";
+import { createClassifierBackend, createDecisionsBackend, type DecisionBackend } from "./backends.ts";
 import { analyzeCommand } from "./guard.ts";
 
 export interface RmGuardConfig {
-	backend: "decisions" | "jev";
+	/** "decisions": a /v1/decisions endpoint. "classifier": any pi-known classifier model. */
+	backend: "decisions" | "classifier";
 	threshold?: number;
 	decisionsUrl: string;
 	decisionsModel: string;
 	timeoutMs: number;
-	jevModelId: string;
-	jevApiKey: string | undefined;
+	/** "provider/model-id" resolved through pi's model registry. */
+	classifier: string;
+	classifierApiKey: string | undefined;
 }
 
 export function configFromEnv(): RmGuardConfig {
@@ -20,8 +22,8 @@ export function configFromEnv(): RmGuardConfig {
 		decisionsUrl: process.env.RM_GUARD_URL ?? "http://localhost:4000/v1/decisions",
 		decisionsModel: process.env.RM_GUARD_MODEL ?? "gemma4",
 		timeoutMs: Number(process.env.RM_GUARD_TIMEOUT_MS ?? "1500"),
-		jevModelId: process.env.RM_GUARD_JEV_MODEL ?? "jev-latest",
-		jevApiKey: process.env.TYPESAFE_API_KEY ?? readKeyFile(process.env.RM_GUARD_JEV_KEY_FILE ?? "~/.secrets/jev.key"),
+		classifier: process.env.RM_GUARD_CLASSIFIER ?? "typesafe/jev-latest",
+		classifierApiKey: process.env.TYPESAFE_API_KEY ?? readKeyFile(process.env.RM_GUARD_JEV_KEY_FILE ?? "~/.secrets/jev.key"),
 	};
 }
 
@@ -54,11 +56,18 @@ function recentUserMessages(pi: ExtensionAPI, limit: number): string[] {
 }
 
 export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
-	const backend: DecisionBackend =
-		config.backend === "jev"
-			? createJevBackend(pi.modelRegistry, { modelId: config.jevModelId, apiKey: config.jevApiKey })
-			: createDecisionsBackend({ url: config.decisionsUrl, model: config.decisionsModel, timeoutMs: config.timeoutMs });
-	const threshold = config.threshold ?? backend.defaultThreshold;
+	const [classifierProvider, classifierModelId] = config.classifier.split("/");
+	// Built lazily: the model registry is only reachable through the handler ctx.
+	let backend: DecisionBackend | undefined;
+	const getBackend = (ctx: { modelRegistry: unknown }) =>
+		(backend ??= config.backend === "classifier"
+				? createClassifierBackend(ctx.modelRegistry as never, {
+						provider: classifierProvider,
+						modelId: classifierModelId,
+						apiKey: config.classifierApiKey,
+					})
+				: createDecisionsBackend({ url: config.decisionsUrl, model: config.decisionsModel, timeoutMs: config.timeoutMs }));
+	const thresholdFor = (ctx: { modelRegistry: unknown }) => config.threshold ?? getBackend(ctx).defaultThreshold;
 
 	// The current turn's user message is not yet in getBranch() when tool_call
 	// fires, so the prompt is captured at agent start and used as the intent.
@@ -81,7 +90,7 @@ export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
 		const recent = recentUserMessages(pi, 2);
 		const intentParts = [...recent, currentPrompt].filter((m) => m.length > 0 && !recent.includes(m));
 		const intent = intentParts.join(" | ") || "(no recent user request in session)";
-		const decision = await backend.decide({ command, intent });
+		const decision = await getBackend(ctx).decide({ command, intent });
 
 		if ("error" in decision) {
 			return requireHuman(ctx, command, `decision model unavailable: ${decision.error}`, "model-error", [intent]);
@@ -89,19 +98,19 @@ export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
 
 		pi.appendEntry("rm-guard", {
 			command,
-			backend: backend.name,
+			backend: getBackend(ctx).name,
 			intent,
-			probability: decision.probability,
+			probability: getBackend() && decision.probability,
 			targets: analysis.targets,
-			autoApproved: decision.probability >= threshold,
+			autoApproved: decision.probability >= thresholdFor(ctx),
 		});
 
-		if (decision.probability >= threshold) {
-			if (ctx.hasUI) ctx.ui.notify(`rm-guard auto-approved (${decision.probability.toFixed(2)}): ${command}`, "info");
+		if (decision.probability >= thresholdFor(ctx)) {
+			if (ctx.hasUI) ctx.ui.notify(`rm-guard auto-approved (${getBackend() && decision.probability.toFixed(2)}): ${command}`, "info");
 			return undefined;
 		}
 
-		return requireHuman(ctx, command, `${backend.name} confidence ${decision.probability.toFixed(2)} < ${threshold}`, "low-confidence", [intent]);
+		return requireHuman(ctx, command, `${getBackend(ctx).name} confidence ${decision.probability.toFixed(2)} < ${thresholdFor(ctx)}`, "low-confidence", [intent]);
 	});
 
 	function requireHuman(

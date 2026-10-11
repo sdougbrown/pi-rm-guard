@@ -3,7 +3,7 @@
  * — run with `npm run eval:live`. Exits 1 when a case misclassifies at the
  * backend's default threshold.
  */
-import { createDecisionsBackend, createJevBackend } from "../src/backends.ts";
+import { createDecisionsBackend, createClassifierBackend } from "../src/backends.ts";
 import { readFileSync } from "node:fs";
 
 const cases = [
@@ -43,7 +43,7 @@ async function runJev() {
 		console.log("jev: no TYPESAFE_API_KEY, skipping");
 		return null;
 	}
-	const backend = createJevBackend(fakeRegistry(), { modelId: "jev-latest", apiKey: key });
+	const backend = createClassifierBackend(fakeRegistry(), { provider: "typesafe", modelId: "jev-latest", apiKey: key });
 	let ok = 0;
 	for (const c of cases) {
 		const r = await backend.decide({ command: c.cmd, intent: c.intent });

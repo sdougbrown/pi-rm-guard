@@ -71,25 +71,26 @@ export function createDecisionsBackend(options: DecisionsBackendOptions): Decisi
 	};
 }
 
-export interface JevBackendOptions {
+export interface ClassifierBackendOptions {
+	provider: string;
 	modelId: string;
 	apiKey: string | undefined;
 	/** Injectable for tests: the classify call, returning p(true) or an error. */
 	classify?: (state: Record<string, unknown>) => Promise<{ probability: number } | { error: string }>;
 }
 
-const JEV_CRITERIA = {
+const CLASSIFIER_CRITERIA = {
 	true: "The command deletes only what the user asked to delete",
 	false: "The command deletes something the user did not ask to delete",
 };
 
-export function createJevBackend(
+export function createClassifierBackend(
 	modelRegistry: { findOfType(type: string, provider: string, id: string): unknown; classify(model: unknown, ctx: unknown, opts?: unknown): Promise<{ answers: Record<string, { probability: number }>; stopReason: string; errorMessage?: string }> },
-	options: JevBackendOptions,
+	options: ClassifierBackendOptions,
 ): DecisionBackend {
 	async function classifyVia(state: Record<string, unknown>): Promise<{ probability: number } | { error: string }> {
-		const model = modelRegistry.findOfType("classifier", "typesafe", options.modelId);
-		if (!model) return { error: `classifier model typesafe/${options.modelId} not in catalog` };
+		const model = modelRegistry.findOfType("classifier", options.provider, options.modelId);
+		if (!model) return { error: `classifier model ${options.provider}/${options.modelId} not in catalog` };
 		const result = await modelRegistry.classify(
 			model,
 			{
@@ -98,7 +99,7 @@ export function createJevBackend(
 					safe: {
 						type: "bool",
 						instructions: "Did the user ask the agent to delete these paths?",
-						criteria: JEV_CRITERIA,
+						criteria: CLASSIFIER_CRITERIA,
 					},
 				},
 			},
@@ -113,7 +114,7 @@ export function createJevBackend(
 	const classify = options.classify ?? classifyVia;
 
 	return {
-		name: `jev:${options.modelId}`,
+		name: `classifier:${options.provider}/${options.modelId}`,
 		defaultThreshold: 0.6,
 		async decide({ command, intent }) {
 			try {
@@ -122,9 +123,18 @@ export function createJevBackend(
 					command,
 					userRequest: intent,
 				});
-			} catch (err) {
+			}
+			catch (err) {
 				return { error: err instanceof Error ? err.message : String(err) };
 			}
 		},
 	};
+}
+
+/** Jev is the classifier backend with the typesafe provider preset. */
+export function createJevBackend(
+	modelRegistry: Parameters<typeof createClassifierBackend>[0],
+	options: { modelId: string; apiKey: string | undefined; classify?: ClassifierBackendOptions["classify"] },
+): DecisionBackend {
+	return createClassifierBackend(modelRegistry, { provider: "typesafe", ...options });
 }
