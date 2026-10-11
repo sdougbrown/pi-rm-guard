@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClassifierBackend, createDecisionsBackend, type DecisionBackend } from "./backends.ts";
 import { analyzeCommand } from "./guard.ts";
+import { registerDecisionsProvider } from "./decisions-provider.ts";
 
 export interface RmGuardConfig {
 	/** "decisions": a /v1/decisions endpoint. "classifier": any pi-known classifier model. */
@@ -13,6 +14,9 @@ export interface RmGuardConfig {
 	/** "provider/model-id" resolved through pi's model registry. */
 	classifier: string;
 	classifierApiKey: string | undefined;
+	/** Register the decisions endpoint as a pi classifier provider at startup. */
+	registerProvider: boolean;
+	providerApiKey: string | undefined;
 }
 
 export function configFromEnv(): RmGuardConfig {
@@ -24,6 +28,8 @@ export function configFromEnv(): RmGuardConfig {
 		timeoutMs: Number(process.env.RM_GUARD_TIMEOUT_MS ?? "1500"),
 		classifier: process.env.RM_GUARD_CLASSIFIER ?? "typesafe/jev-latest",
 		classifierApiKey: process.env.TYPESAFE_API_KEY ?? readKeyFile(process.env.RM_GUARD_JEV_KEY_FILE ?? "~/.secrets/jev.key"),
+		registerProvider: process.env.RM_GUARD_REGISTER_PROVIDER === "1",
+		providerApiKey: process.env.RM_GUARD_API_KEY,
 	};
 }
 
@@ -131,5 +137,13 @@ export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
 }
 
 export default function (pi: ExtensionAPI) {
-	createRmGuard(pi, configFromEnv());
+	const config = configFromEnv();
+	if (config.registerProvider) {
+		registerDecisionsProvider(pi, {
+			baseUrl: config.decisionsUrl.replace(/\/decisions$/, ""),
+			models: [config.decisionsModel],
+			apiKey: config.providerApiKey,
+		});
+	}
+	createRmGuard(pi, config);
 }

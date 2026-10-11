@@ -38,6 +38,8 @@ Three gates run in order. A command is auto-approved only if it passes all of th
 | `RM_GUARD_TIMEOUT_MS` | `1500` | decisions request timeout |
 | `RM_GUARD_CLASSIFIER` | `typesafe/jev-latest` | `provider/model-id` resolved through pi's model registry |
 | `RM_GUARD_JEV_KEY_FILE` | `~/.secrets/jev.key` | key file if the provider env key is unset |
+| `RM_GUARD_REGISTER_PROVIDER` | unset | `1` registers the decisions endpoint as a pi classifier provider |
+| `RM_GUARD_API_KEY` | unset | provider key when registering |
 
 ## Choosing a model
 
@@ -51,12 +53,24 @@ RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=openrouter/typesafe/jev-1.13
 RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=llama-cpp/gemma-3-4b-it  # llama.cpp router users
 ```
 
+**Decisions endpoint as a pi provider:** pi has no built-in support for the
+`/v1/decisions` route, but rm-guard can register it as a classifier provider
+at startup, making `decisions/<model>` resolvable anywhere in pi (codemode
+scripts included):
+
+```sh
+RM_GUARD_REGISTER_PROVIDER=1                     # registers provider "decisions"
+RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=decisions/gemma4
+RM_GUARD_URL=http://grace:4000/v1/decisions      # baseUrl is derived by stripping /decisions
+RM_GUARD_API_KEY=...                             # optional; provider key
+```
+
+With registration on, the direct-fetch decisions path is bypassed — the
+request flows through pi's classifier machinery like any other provider.
+Keep `RM_GUARD_BACKEND=decisions` if you want the standalone fetch instead.
+
 Note the question phrasing is calibrated on the eval set; other models may need
 a threshold tweak (`RM_GUARD_THRESHOLD`). Run `npm run eval:live` to check.
-
-**Decisions backend:** for a llama.cpp-style router exposing a custom
-`/v1/decisions` route with typed yes/no questions and next-token probabilities
-(this is how the `gemma4` calibration was done). Needs the URL and model.
 
 ## Install
 
