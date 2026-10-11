@@ -9,11 +9,15 @@ import { analyzeCommand, resolveReal } from "../src/guard.ts";
 // pointing outside (to $HOME) — the classic symlink escape.
 const proj = path.join(tmpdir(), `rmguard-test-${process.pid}`);
 mkdirSync(path.join(proj, "node_modules/.cache"), { recursive: true });
+mkdirSync(path.join(proj, "sub"), { recursive: true });
 mkdirSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}/build-123`), { recursive: true });
 const homeOutside = path.join(process.env.HOME ?? "/tmp", `.rmguard-test-${process.pid}/.ssh`);
 mkdirSync(homeOutside, { recursive: true });
 writeFileSync(path.join(homeOutside, "id_ed25519"), "key");
 symlinkSync(homeOutside, path.join(proj, "leak"));
+symlinkSync(path.dirname(homeOutside), path.join(proj, "to-home")); // -> $HOME/.rmguard-test-<pid>
+symlinkSync("/", path.join(proj, "to-root"));
+symlinkSync(path.join(proj, "to-home"), path.join(proj, "to-home-2")); // symlink -> symlink
 
 const eligible = (cmd: string) => analyzeCommand(cmd, proj);
 const defer = (cmd: string) => {
@@ -102,6 +106,15 @@ test("targets outside cwd and /tmp defer, including via symlink", () => {
 	defer("rm -rf leak");
 	defer("rm -rf ..");
 	defer("rm -rf /rmguard-outside");
+});
+
+test("sneaky symlink escapes defer", () => {
+	defer("rm -rf to-home"); // link -> outside
+	defer("rm -rf to-home/"); // trailing slash through the link
+	defer("rm -rf to-home-2"); // link -> link -> outside
+	defer("rm -rf ./to-home/../anything"); // POSIX resolves .. against the link target
+	defer("rm -rf to-root/../etc"); // .. on / stays /, then /etc
+	defer("rm -rf sub/../.."); // two physical levels up from a subdir lands at /tmp itself
 });
 
 test("whole-project deletion defers even though it is in scope", () => {

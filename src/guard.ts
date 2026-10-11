@@ -109,25 +109,28 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 }
 
 /**
- * Realpath of a path: realpathSync when it exists, otherwise the realpath of
- * its deepest existing ancestor (the leaf may be a new dir about to be filled).
+ * Physical resolution of a target against the real cwd. path.resolve is not
+ * usable: it cancels ".." lexically, but POSIX resolves ".." against the
+ * symlink target, so `link/../x` can escape in ways path.resolve hides.
+ * Components are resolved one at a time through realpath; missing leaves
+ * (dirs about to be created) are tolerated by keeping the raw suffix.
  */
 export function resolveReal(target: string, cwd: string): string {
-	const abs = path.resolve(cwd, target);
-	try {
-		return realpathSync(abs);
-	} catch {
-		let probe = abs;
-		while (true) {
-			const parent = path.dirname(probe);
-			if (parent === probe) return abs;
-			try {
-				return path.join(realpathSync(parent), path.relative(parent, abs));
-			} catch {
-				probe = parent;
-			}
+	const start = target.startsWith("/") ? "/" : resolveReal(cwd, cwd);
+	let current = start;
+	for (const part of target.split("/").filter((p) => p.length > 0 && p !== ".")) {
+		if (part === "..") {
+			current = path.dirname(current);
+			continue;
+		}
+		const next = current === "/" ? "/" + part : current + "/" + part;
+		try {
+			current = realpathSync(next);
+		} catch {
+			current = next;
 		}
 	}
+	return current;
 }
 
 function isUnder(resolved: string, root: string): boolean {
