@@ -32,12 +32,138 @@ function isFlag(token: string): boolean {
 	return token.startsWith("-") && token !== "-";
 }
 
-/** Split on ; && || | and newlines. Only safe because expansion chars defer later. */
+/**
+ * Split on ; && || | and newlines, respecting quotes and command substitutions
+ * (a `|` inside `$(...)` or a quoted string is not a separator).
+ */
 function splitSegments(command: string): string[] {
+	const out: string[] = [];
+	let current = "";
+	let quote: string | null = null;
+	let paren = 0;
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i];
+		if (quote) {
+			current += ch;
+			if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === "'" || ch === '"') {
+			quote = ch;
+			current += ch;
+			continue;
+		}
+		if (ch === "\\" && i + 1 < command.length) {
+			current += ch + command[i + 1];
+			i++;
+			continue;
+		}
+		if (ch === "$" && command[i + 1] === "(") {
+			paren++;
+			current += "$(";
+			i++;
+			continue;
+		}
+		if (ch === "(" && paren > 0) {
+			paren++;
+			current += ch;
+			continue;
+		}
+		if (ch === ")" && paren > 0) {
+			paren--;
+			current += ch;
+			continue;
+		}
+		if (paren === 0 && (ch === ";" || ch === "|" || ch === "&" || ch === "\n")) {
+			if (current.trim().length > 0) out.push(current.trim());
+			current = "";
+			if ((ch === "|" || ch === "&") && command[i + 1] === ch) i++;
+			continue;
+		}
+		current += ch;
+	}
+	if (current.trim().length > 0) out.push(current.trim());
+	return out;
+}
+
+/** Remove quoted spans (and escaped chars). Returns null on unbalanced quotes. */
+function stripQuoted(segment: string): string | null {
+	let out = "";
+	let quote: string | null = null;
+	for (let i = 0; i < segment.length; i++) {
+		const ch = segment[i];
+		if (quote) {
+			if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === "'" || ch === '"') {
+			quote = ch;
+			continue;
+		}
+		if (ch === "\\" && i + 1 < segment.length) {
+			i++;
+			continue;
+		}
+		out += ch;
+	}
+	return quote === null ? out : null;
+}
+
+/** Extract the contents of command substitutions; the remainder has them removed. */
+function extractSubstitutions(segment: string): { remainder: string; inners: string[] } {
+	let remainder = "";
+	const inners: string[] = [];
+	let quote: string | null = null;
+	for (let i = 0; i < segment.length; i++) {
+		const ch = segment[i];
+		if (quote) {
+			remainder += ch;
+			if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === "'" || ch === '"') {
+			quote = ch;
+			remainder += ch;
+			continue;
+		}
+		if ((ch === "$" && segment[i + 1] === "(") || ch === "`") {
+			const closer = ch === "`" ? "`" : ")";
+			const opener = ch === "`" ? "`" : "$(";
+			let depth = 1;
+			let inner = "";
+			i += opener.length;
+			while (i < segment.length && depth > 0) {
+				const c = segment[i];
+				if (c === "(" && closer === ")") depth++;
+				if (c === closer) depth--;
+				if (depth > 0) inner += c;
+				i++;
+			}
+			inners.push(inner);
+			remainder += " ";
+			i--;
+			continue;
+		}
+		remainder += ch;
+	}
+	return { remainder, inners };
+}
+
+/** Whether a command string (no quotes assumed) invokes rm as a command token. */
+function hasRmToken(command: string): boolean {
 	return command
-		.split(/[;&|\n]/)
-		.map((s) => s.trim())
-		.filter((s) => s.length > 0);
+		.split(/\s+/)
+		.filter(Boolean)
+		.some((token) => token === "rm" || token.endsWith("/rm"));
+}
+
+/** Whether a command string invokes rm anywhere (top level or nested substitutions). */
+function invokesRm(command: string): boolean {
+	const stripped = stripQuoted(command);
+	if (stripped === null) return hasRmToken(command);
+	const { remainder, inners } = extractSubstitutions(stripped);
+	if (hasRmToken(remainder)) return true;
+	return inners.some((inner) => invokesRm(inner));
 }
 
 /**
@@ -188,26 +314,53 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	let reason = "";
 	const vars = literalAssignments(segments);
 	const targets: string[] = [];
+
 	for (const segment of segments) {
-		const verdict = analyzeSegment(segment, home, vars);
-		if ("targets" in verdict) {
-			sawRecursive = true;
-			targets.push(...verdict.targets);
-		} else if (verdict.defer === "segment is not a plain rm invocation") {
-			// An rm hiding behind sudo/env/xargs must defer; a segment with no rm
-			// at all is not this gate's concern.
-			if (/(^|[\s/])rm(\s|$)/.test(segment)) {
+		const stripped = stripQuoted(segment);
+		if (stripped === null) {
+			// Unbalanced quoting: a quoted "rm -rf" mention is harmless, but we
+			// cannot tell where the quotes end — any rm mention defers.
+			if (hasRmToken(segment)) {
 				rmDeferred = true;
-				reason = "rm is not in leading position";
+				reason = "unbalanced quoting around an rm mention";
 			}
-		} else {
-			if (verdict.defer === "rm without a recursive flag") sawPlainRm = true;
-			else {
+			continue;
+		}
+
+		const { remainder, inners } = extractSubstitutions(stripped);
+		const firstToken = remainder.trim().split(/\s+/)[0] ?? "";
+
+		if (firstToken === "rm" || firstToken.endsWith("/rm")) {
+			const verdict = analyzeSegment(segment, home, vars);
+			if ("targets" in verdict) {
+				sawRecursive = true;
+				targets.push(...verdict.targets);
+			} else if (verdict.defer === "rm without a recursive flag") {
+				sawPlainRm = true;
+			} else {
 				rmDeferred = true;
 				reason = verdict.defer;
 			}
+			continue;
+		}
+
+		// Non-rm segment: an unquoted rm token means rm runs behind something we
+		// cannot verify (sudo, env prefix, xargs). A quoted "rm -rf" is stripped
+		// before this point and ignored. rm inside a substitution executes.
+		if (hasRmToken(remainder)) {
+			rmDeferred = true;
+			reason = "rm is not in leading position";
+			continue;
+		}
+		for (const inner of inners) {
+			if (invokesRm(inner)) {
+				rmDeferred = true;
+				reason = "rm inside a command substitution";
+				break;
+			}
 		}
 	}
+
 	if (!sawRecursive && !rmDeferred) return { kind: "absent" };
 	if (rmDeferred || sawPlainRm) return { kind: "defer", reason: reason || "mixed recursive and non-recursive rm" };
 

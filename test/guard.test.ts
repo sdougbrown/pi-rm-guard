@@ -76,6 +76,25 @@ test("last assignment wins and stays scope-checked", () => {
 	defer("WT=/etc; rm -rf $WT");
 });
 
+test("quoted rm mentions in non-rm commands pass through untouched", () => {
+	absent('grep -rn "rm -rf" src/');
+	absent('echo "run rm -rf to clean up"');
+	absent('echo "rm -rf"');
+	absent('git log --grep="rm -rf"');
+	absent("echo 'run rm -rf now'");
+});
+
+test("unquoted bare rm tokens in non-rm segments defer", () => {
+	defer("echo rm -rf");
+	defer("grep rm -rf src/");
+});
+
+test("rm inside a command substitution defers", () => {
+	defer("echo $(rm -rf $HOME)");
+	defer("echo `rm -rf ~`");
+	defer("WT=$(ls -d /tmp/wt-verify.* | tail -1); rm -rf $WT");
+});
+
 test("non-rm commands are absent from the gate entirely", () => {
 	absent("ls -la /tmp | head");
 	absent("test -e x && echo gone");
