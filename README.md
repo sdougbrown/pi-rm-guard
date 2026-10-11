@@ -16,16 +16,28 @@ Three gates run in order. A command is auto-approved only if it passes all of th
    itself, `/tmp` itself, or any ancestor. Symlinks are resolved, so a link inside the
    project pointing at `$HOME/.ssh` defers.
 
-2. **Decision model** — one yes/no question about intent alignment: *"Did the user ask
-   the agent to delete these paths?"* The model sees the command and the last user
-   messages from the session. Two backends:
+2. **Decision model** — one question about intent alignment, answered from the
+   command and the last user messages in the session. Two backends:
    - `decisions` (default): a `/v1/decisions` endpoint, e.g. a local llama.cpp router
-     running `gemma4`. Threshold 0.85.
-   - `jev`: TypeSafe's Jev classifier via `ctx.modelRegistry.classify()`. Threshold 0.6.
+     running `gemma4`. Asks a 3-way approve/ask/deny choice; approve ≥0.85,
+     deny ≥0.99, everything else defers.
+   - `classifier`: any pi-known classifier model (`typesafe/jev-latest`,
+     openrouter, cloudflare clef, llama.cpp router models) via
+     `ctx.modelRegistry.classify()`. Bool answer: yes ≥0.6 approves, no defers
+     (bool classifiers have no deny label).
 
-3. **Fallback** — below threshold, on model error, or with no UI (print/JSON/RPC
-   mode), the command is **blocked, never silently run**. In interactive mode a
-   confirmation dialog asks; print mode fails closed.
+3. **Verdict** — three outcomes:
+   - **approve** (statically eligible + model confident): the call proceeds.
+   - **deny** — auto-blocked, no dialog: static targets that are the filesystem
+     root, system trees (/etc, /usr, /var, …), the whole home directory, a cwd
+     ancestor, or /tmp itself; or a model "deny" at ≥0.99 confidence (the
+     decisions backend's 3-way approve/ask/deny question; the injected
+     instruction case lands here).
+   - **defer** — everything else: human confirm in interactive mode; blocked in
+     print/JSON/RPC mode (fail closed). Model errors also defer.
+
+Every decision is logged as an `rm-guard` session entry (command, backend,
+intent, action, probability, targets, autoApproved).
 
 ## Configuration (environment)
 

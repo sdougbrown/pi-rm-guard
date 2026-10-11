@@ -65,7 +65,7 @@ export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
 	const [classifierProvider, classifierModelId] = config.classifier.split("/");
 	// Built lazily: the model registry is only reachable through the handler ctx.
 	let backend: DecisionBackend | undefined;
-	const getBackend = (ctx: { modelRegistry: unknown }) =>
+	const getBackend = (ctx: { modelRegistry: unknown }): DecisionBackend =>
 		(backend ??= config.backend === "classifier"
 				? createClassifierBackend(ctx.modelRegistry as never, {
 						provider: classifierProvider,
@@ -74,6 +74,7 @@ export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
 					})
 				: createDecisionsBackend({ url: config.decisionsUrl, model: config.decisionsModel, timeoutMs: config.timeoutMs }));
 	const thresholdFor = (ctx: { modelRegistry: unknown }) => config.threshold ?? getBackend(ctx).defaultThreshold;
+	void thresholdFor;
 
 	// The current turn's user message is not yet in getBranch() when tool_call
 	// fires, so the prompt is captured at agent start and used as the intent.
@@ -89,6 +90,10 @@ export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
 
 		const analysis = analyzeCommand(command, ctx.cwd);
 		if (analysis.kind === "absent") return undefined;
+		if (analysis.kind === "deny") {
+			pi.appendEntry("rm-guard", { command, gate: "denied", reason: analysis.reason, intent: [], autoApproved: false });
+			return { block: true, reason: `rm-guard: auto-denied — ${analysis.reason}` };
+		}
 		if (analysis.kind === "defer") {
 			return requireHuman(ctx, command, analysis.reason, "ineligible", []);
 		}
@@ -106,17 +111,21 @@ export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
 			command,
 			backend: getBackend(ctx).name,
 			intent,
-			probability: getBackend() && decision.probability,
+			action: decision.action,
+			probability: decision.probability,
 			targets: analysis.targets,
-			autoApproved: decision.probability >= thresholdFor(ctx),
+			autoApproved: decision.action === "approve",
 		});
 
-		if (decision.probability >= thresholdFor(ctx)) {
-			if (ctx.hasUI) ctx.ui.notify(`rm-guard auto-approved (${getBackend() && decision.probability.toFixed(2)}): ${command}`, "info");
+		if (decision.action === "approve") {
+			if (ctx.hasUI) ctx.ui.notify(`rm-guard auto-approved (${decision.probability.toFixed(2)}): ${command}`, "info");
 			return undefined;
 		}
+		if (decision.action === "deny") {
+			return { block: true, reason: `rm-guard: ${getBackend(ctx).name} denied (${decision.probability.toFixed(2)}): ${command}` };
+		}
 
-		return requireHuman(ctx, command, `${getBackend(ctx).name} confidence ${decision.probability.toFixed(2)} < ${thresholdFor(ctx)}`, "low-confidence", [intent]);
+		return requireHuman(ctx, command, `${getBackend(ctx).name} confidence ${decision.probability.toFixed(2)}`, "low-confidence", [intent]);
 	});
 
 	function requireHuman(

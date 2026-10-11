@@ -180,9 +180,10 @@ function literalAssignments(segments: string[]): Map<string, string> {
 	return vars;
 }
 
-function substituteVars(target: string, vars: Map<string, string>): string | undefined {
+function substituteVars(target: string, vars: Map<string, string>, home: string): string | undefined {
 	return target.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (whole, braced, plain) => {
-		const value = vars.get(braced ?? plain);
+		const name = braced ?? plain;
+		const value = vars.get(name) ?? (name === "HOME" ? home : undefined);
 		return value === undefined ? whole : value;
 	});
 }
@@ -222,7 +223,7 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 			continue;
 		}
 		const expanded = expandTilde(token, home);
-		const substituted = substituteVars(expanded, vars);
+		const substituted = substituteVars(expanded, vars, home);
 		if (hasUnresolvableChars(substituted)) {
 			return { defer: `target is not statically resolvable: ${token}` };
 		}
@@ -265,32 +266,51 @@ function isUnder(resolved: string, root: string): boolean {
 
 export interface ScopeVerdict {
 	inScope: boolean;
+	denied: boolean;
 	reason: string;
 	resolved: string[];
 }
 
+const SYSTEM_ROOTS = ["/etc", "/usr", "/var", "/boot", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/dev", "/proc", "/sys", "/run"];
+
 /**
  * A target is model-eligible only when every resolved target is strictly inside
- * cwd or /tmp. A target that IS the cwd (or an ancestor of it) is always
- * deferred even though it is "inside" — that is the whole project.
+ * cwd or /tmp. Three outcomes: in scope (model may approve), denied (never —
+ * filesystem root, system trees, the whole home directory, or a cwd ancestor),
+ * or outside scope (human decision).
  */
 export function isTargetInScope(targets: string[], cwd: string, tmpReal: string): ScopeVerdict {
 	const resolved: string[] = [];
 	const cwdReal = resolveReal(cwd, cwd);
+	const homeReal = process.env.HOME ? resolveReal(process.env.HOME, cwd) : "";
 	for (const target of targets) {
 		const real = resolveReal(target, cwd);
 		resolved.push(real);
-		if (!(isUnder(real, cwdReal) || isUnder(real, tmpReal))) {
-			return { inScope: false, reason: `${target} resolves outside the session and /tmp`, resolved };
+		if (real === "/") {
+			return { inScope: false, denied: true, reason: `${target} is the filesystem root`, resolved };
 		}
-		if (real === cwdReal || isUnder(cwdReal, real)) {
-			return { inScope: false, reason: `${target} is the working directory itself or an ancestor`, resolved };
+		for (const root of SYSTEM_ROOTS) {
+			if (isUnder(real, root)) {
+				return { inScope: false, denied: true, reason: `${target} is a system path (${root})`, resolved };
+			}
+		}
+		if (homeReal && real === homeReal) {
+			return { inScope: false, denied: true, reason: `${target} is the whole home directory`, resolved };
+		}
+		if (real === cwdReal) {
+			return { inScope: false, denied: false, reason: `${target} is the working directory itself`, resolved };
 		}
 		if (real === tmpReal || isUnder(tmpReal, real)) {
-			return { inScope: false, reason: `${target} is /tmp itself or an ancestor`, resolved };
+			return { inScope: false, denied: true, reason: `${target} is /tmp itself or an ancestor`, resolved };
+		}
+		if (isUnder(cwdReal, real)) {
+			return { inScope: false, denied: true, reason: `${target} is an ancestor of the working directory`, resolved };
+		}
+		if (!(isUnder(real, cwdReal) || isUnder(real, tmpReal))) {
+			return { inScope: false, denied: false, reason: `${target} resolves outside the session and /tmp`, resolved };
 		}
 	}
-	return { inScope: true, reason: "all targets under cwd or /tmp", resolved };
+	return { inScope: true, denied: false, reason: "all targets under cwd or /tmp", resolved };
 }
 
 /**
@@ -301,6 +321,7 @@ export function isTargetInScope(targets: string[], cwd: string, tmpReal: string)
 export type CommandVerdict =
 	| { kind: "absent" }
 	| { kind: "defer"; reason: string }
+	| { kind: "deny"; reason: string }
 	| { kind: "eligible"; targets: string[] };
 
 export function analyzeCommand(command: string, cwd: string): CommandVerdict {
@@ -366,6 +387,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 
 	const tmpReal = resolveReal("/tmp", cwd);
 	const scope = isTargetInScope(targets, cwd, tmpReal);
+	if (scope.denied) return { kind: "deny", reason: scope.reason };
 	if (!scope.inScope) return { kind: "defer", reason: scope.reason };
 	return { kind: "eligible", targets };
 }

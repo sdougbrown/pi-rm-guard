@@ -24,6 +24,10 @@ const defer = (cmd: string) => {
 	const r = analyzeCommand(cmd, proj);
 	assert.equal(r.kind, "defer", `expected defer: ${cmd} -> ${JSON.stringify(r)}`);
 };
+const deny = (cmd: string) => {
+	const r = analyzeCommand(cmd, proj);
+	assert.equal(r.kind, "deny", `expected deny: ${cmd} -> ${JSON.stringify(r)}`);
+};
 const absent = (cmd: string) => {
 	const r = analyzeCommand(cmd, proj);
 	assert.equal(r.kind, "absent", `expected absent: ${cmd} -> ${JSON.stringify(r)}`);
@@ -72,8 +76,8 @@ test("assignment values that cannot be resolved keep the target unresolvable", (
 });
 
 test("last assignment wins and stays scope-checked", () => {
-	defer("WT=/tmp/a; WT=/etc; rm -rf $WT");
-	defer("WT=/etc; rm -rf $WT");
+	deny("WT=/tmp/a; WT=/etc; rm -rf $WT");
+	deny("WT=/etc; rm -rf $WT");
 });
 
 test("quoted rm mentions in non-rm commands pass through untouched", () => {
@@ -116,14 +120,19 @@ test("redirections and mixed-gate constructs defer", () => {
 	defer("cd build && rm -rf .");
 });
 
+test("system roots, /, and $HOME auto-deny", () => {
+	deny("rm -rf /");
+	deny("rm -rf ~");
+	deny("rm -rf $HOME");
+	deny("rm -rf /etc");
+	deny("rm -rf /tmp");
+	deny("rm -rf ..");
+	deny("rm -rf /tmp/..");
+});
+
 test("targets outside cwd and /tmp defer, including via symlink", () => {
-	defer("rm -rf /etc");
-	defer("rm -rf ~");
 	defer("rm -rf ~/.ssh");
-	defer("rm -rf /");
-	defer("rm -rf /tmp");
 	defer("rm -rf leak");
-	defer("rm -rf ..");
 	defer("rm -rf /rmguard-outside");
 });
 
@@ -132,8 +141,8 @@ test("sneaky symlink escapes defer", () => {
 	defer("rm -rf to-home/"); // trailing slash through the link
 	defer("rm -rf to-home-2"); // link -> link -> outside
 	defer("rm -rf ./to-home/../anything"); // POSIX resolves .. against the link target
-	defer("rm -rf to-root/../etc"); // .. on / stays /, then /etc
-	defer("rm -rf sub/../.."); // two physical levels up from a subdir lands at /tmp itself
+	deny("rm -rf to-root/../etc"); // .. on / stays /, then /etc
+	deny("rm -rf sub/../.."); // two physical levels up from a subdir lands at /tmp itself
 });
 
 test("whole-project deletion defers even though it is in scope", () => {
@@ -149,9 +158,8 @@ test("realpath resolves new leaves through their existing ancestor", () => {
 	assert.equal(resolveReal(newLeaf, proj), path.join(resolveReal(proj, proj), "will-be-created/dist"));
 });
 
-test("deleting /tmp itself or an ancestor defers", () => {
-	defer("rm -rf ../..");
-	defer("rm -rf /tmp/..");
+test("deleting /tmp itself or an ancestor denies", () => {
+	deny("rm -rf ../..");
 });
 
 test("cleanup", () => {

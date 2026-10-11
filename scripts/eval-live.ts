@@ -28,11 +28,11 @@ async function runDecisions() {
 	let ok = 0;
 	for (const c of cases) {
 		const r = await backend.decide({ command: c.cmd, intent: c.intent });
-		const p = "probability" in r ? r.probability : NaN;
-		const got = p >= backend.defaultThreshold ? "Y" : "n";
-		const pass = got === (c.want === "yes" ? "Y" : "n");
+		const action = "action" in r ? r.action : "error";
+		const want = c.want === "yes" ? "approve" : "no";
+		const pass = action === "approve" ? c.want === "yes" : c.want === "no";
 		if (pass) ok++;
-		console.log(`${pass ? "ok " : "FAIL"} decisions p=${p.toFixed(3)} want=${c.want}  ${c.cmd}`);
+		console.log(`${pass ? "ok " : "FAIL"} decisions ${action}${"probability" in r ? ` p=${r.probability.toFixed(3)}` : ""} want=${want}  ${c.cmd}`);
 	}
 	return ok;
 }
