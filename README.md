@@ -62,24 +62,35 @@ intent, action, probability, targets, autoApproved.
 
 ## Configuration
 
-All settings are environment variables, read when the extension loads — export
-them before starting pi (shell profile, wrapper script, or systemd unit).
+Defaults: **classifier backend with `typesafe/jev-latest`**. Two ways to
+override, merged in this order (later wins):
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `RM_GUARD_BACKEND` | `decisions` | `decisions` (custom /v1/decisions endpoint) or `classifier` (pi-known classifier model) |
-| `RM_GUARD_THRESHOLD` | backend default | minimum p(approve) to auto-approve (decisions 0.85, classifier 0.6) |
-| `RM_GUARD_URL` | `http://localhost:4000/v1/decisions` | decisions endpoint |
-| `RM_GUARD_MODEL` | `gemma4` | decisions model |
-| `RM_GUARD_TIMEOUT_MS` | `1500` | decisions request timeout |
-| `RM_GUARD_CLASSIFIER` | `typesafe/jev-latest` | `provider/model-id` resolved through pi's model registry |
-| `RM_GUARD_JEV_KEY_FILE` | `~/.secrets/jev.key` | key file for the typesafe classifier when `TYPESAFE_API_KEY` is unset |
-| `RM_GUARD_REGISTER_PROVIDER` | unset | `1` registers the decisions endpoint as a pi classifier provider |
-| `RM_GUARD_API_KEY` | unset | provider key when registering |
+1. **pi settings** — an `rmGuard` block in pi's settings (global or project):
 
-With no configuration at all, the decisions backend is used; if the endpoint is
-absent, every eligible command defers (fail-closed). Users without a local
-decision endpoint should set `RM_GUARD_BACKEND=classifier`.
+```jsonc
+{
+  "rmGuard": {
+    "backend": "classifier",            // or "decisions"
+    "classifier": "decisions/gemma4",   // provider/model-id via pi's registry
+    "registerProvider": true,           // register the decisions endpoint as a pi classifier provider
+    "url": "http://grace:4000/v1/decisions",
+    "model": "gemma4",
+    "threshold": 0.85,
+    "timeoutMs": 1500,
+    "keyFile": "~/.secrets/jev.key"     // key file for the typesafe classifier
+  }
+}
+```
+
+2. **Environment variables** (per-machine override; same names as the settings
+   keys in caps): `RM_GUARD_BACKEND`, `RM_GUARD_URL`, `RM_GUARD_MODEL`,
+   `RM_GUARD_TIMEOUT_MS`, `RM_GUARD_CLASSIFIER`, `RM_GUARD_THRESHOLD`,
+   `RM_GUARD_REGISTER_PROVIDER` (`1`/`0`), `RM_GUARD_API_KEY`,
+   `RM_GUARD_JEV_KEY_FILE`.
+
+Config resolves lazily at the first gated tool call, so a settings block added
+mid-session applies from the next command. With no configuration, the
+classifier backend runs; missing keys or unreachable models defer (fail-closed).
 
 ## Choosing a model
 
@@ -136,6 +147,6 @@ npm run eval:live # calibration eval against live engines (needs the endpoints)
   deferred in testing, but this is a judgment model, not a security boundary.
   The static gate bounds blast radius to cwd and /tmp; run pi in a sandbox when
   that is not enough.
-- The default decisions endpoint is a localhost URL; it is a safe no-op
-  (defers) when absent, but set `RM_GUARD_BACKEND=classifier` unless you run a
-  compatible router.
+- The default classifier is `typesafe/jev-latest` and needs a key
+  (`TYPESAFE_API_KEY`, the key file, or a pi credential). Without one, every
+  eligible command defers — a safe no-op, but set a model you can reach.

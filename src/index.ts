@@ -19,17 +19,51 @@ export interface RmGuardConfig {
 	providerApiKey: string | undefined;
 }
 
-export function configFromEnv(): RmGuardConfig {
+/** Settings block: `rmGuard` in pi settings.json (global or project). */
+export interface RmGuardSettings {
+	backend?: string;
+	url?: string;
+	model?: string;
+	timeoutMs?: number;
+	classifier?: string;
+	threshold?: number;
+	registerProvider?: boolean;
+	keyFile?: string;
+}
+
+function readRmGuardSettings(pi: ExtensionAPI): RmGuardSettings | undefined {
+	try {
+		const settings = (pi as { getSettings?: () => { rmGuard?: RmGuardSettings } }).getSettings?.();
+		return settings?.rmGuard;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Precedence: environment variables > pi settings `rmGuard` block > defaults.
+ * Env is the per-machine override; the settings block is the portable config.
+ */
+export function resolveConfig(pi: ExtensionAPI): RmGuardConfig {
+	const settings = readRmGuardSettings(pi) ?? {};
+	const env = (name: string): string | undefined => process.env[name];
+	const str = (key: keyof RmGuardSettings, envName: string, fallback: string): string =>
+		env(envName) ?? (settings[key] as string | undefined) ?? fallback;
+	const num = (key: keyof RmGuardSettings, envName: string, fallback: number): number => {
+		const raw = env(envName) ?? (settings[key] as number | undefined);
+		return raw === undefined ? fallback : Number(raw);
+	};
+
 	return {
-		backend: (process.env.RM_GUARD_BACKEND as RmGuardConfig["backend"]) ?? "decisions",
-		threshold: process.env.RM_GUARD_THRESHOLD ? Number(process.env.RM_GUARD_THRESHOLD) : undefined,
-		decisionsUrl: process.env.RM_GUARD_URL ?? "http://localhost:4000/v1/decisions",
-		decisionsModel: process.env.RM_GUARD_MODEL ?? "gemma4",
-		timeoutMs: Number(process.env.RM_GUARD_TIMEOUT_MS ?? "1500"),
-		classifier: process.env.RM_GUARD_CLASSIFIER ?? "typesafe/jev-latest",
-		classifierApiKey: process.env.TYPESAFE_API_KEY ?? readKeyFile(process.env.RM_GUARD_JEV_KEY_FILE ?? "~/.secrets/jev.key"),
-		registerProvider: process.env.RM_GUARD_REGISTER_PROVIDER === "1",
-		providerApiKey: process.env.RM_GUARD_API_KEY,
+		backend: (env("RM_GUARD_BACKEND") as RmGuardConfig["backend"]) ?? (settings.backend as RmGuardConfig["backend"]) ?? "classifier",
+		threshold: env("RM_GUARD_THRESHOLD") ? Number(env("RM_GUARD_THRESHOLD")) : (settings.threshold as number | undefined),
+		decisionsUrl: str("url", "RM_GUARD_URL", "http://localhost:4000/v1/decisions"),
+		decisionsModel: str("model", "RM_GUARD_MODEL", "gemma4"),
+		timeoutMs: num("timeoutMs", "RM_GUARD_TIMEOUT_MS", 1500),
+		classifier: str("classifier", "RM_GUARD_CLASSIFIER", "typesafe/jev-latest"),
+		classifierApiKey: process.env.TYPESAFE_API_KEY ?? readKeyFile(str("keyFile", "RM_GUARD_JEV_KEY_FILE", "~/.secrets/jev.key")),
+		registerProvider: env("RM_GUARD_REGISTER_PROVIDER") !== undefined ? env("RM_GUARD_REGISTER_PROVIDER") === "1" : (settings.registerProvider ?? false),
+		providerApiKey: env("RM_GUARD_API_KEY"),
 	};
 }
 
@@ -61,20 +95,20 @@ function recentUserMessages(pi: ExtensionAPI, limit: number): string[] {
 	}
 }
 
-export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
-	const [classifierProvider, classifierModelId] = config.classifier.split("/");
+export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) {
 	// Built lazily: the model registry is only reachable through the handler ctx.
 	let backend: DecisionBackend | undefined;
-	const getBackend = (ctx: { modelRegistry: unknown }): DecisionBackend =>
-		(backend ??= config.backend === "classifier"
+	const getBackend = (ctx: { modelRegistry: unknown }): DecisionBackend => {
+		const config = getConfig();
+		const [classifierProvider, classifierModelId] = config.classifier.split("/");
+		return (backend ??= config.backend === "classifier"
 				? createClassifierBackend(ctx.modelRegistry as never, {
 						provider: classifierProvider,
 						modelId: classifierModelId,
 						apiKey: config.classifierApiKey,
 					})
 				: createDecisionsBackend({ url: config.decisionsUrl, model: config.decisionsModel, timeoutMs: config.timeoutMs }));
-	const thresholdFor = (ctx: { modelRegistry: unknown }) => config.threshold ?? getBackend(ctx).defaultThreshold;
-	void thresholdFor;
+	};
 
 	// The current turn's user message is not yet in getBranch() when tool_call
 	// fires, so the prompt is captured at agent start and used as the intent.
@@ -146,13 +180,21 @@ export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
 }
 
 export default function (pi: ExtensionAPI) {
-	const config = configFromEnv();
-	if (config.registerProvider) {
-		registerDecisionsProvider(pi, {
-			baseUrl: config.decisionsUrl.replace(/\/decisions$/, ""),
-			models: [config.decisionsModel],
-			apiKey: config.providerApiKey,
-		});
-	}
-	createRmGuard(pi, config);
+	// Config (and provider registration) resolve lazily: getSettings() throws
+	// during extension loading.
+	let config: RmGuardConfig | undefined;
+	const ensureConfig = (): RmGuardConfig => {
+		if (!config) {
+			config = resolveConfig(pi);
+			if (config.registerProvider) {
+				registerDecisionsProvider(pi, {
+					baseUrl: config.decisionsUrl.replace(/\/decisions$/, ""),
+					models: [config.decisionsModel],
+					apiKey: config.providerApiKey,
+				});
+			}
+		}
+		return config;
+	};
+	createRmGuard(pi, () => ensureConfig());
 }

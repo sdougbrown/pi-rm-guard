@@ -1,1 +1,1 @@
-export { default, createRmGuard, configFromEnv, type RmGuardConfig } from "./src/index.ts";
+export { default, createRmGuard, resolveConfig, type RmGuardConfig, type RmGuardSettings } from "./src/index.ts";
