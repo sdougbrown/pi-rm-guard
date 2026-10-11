@@ -141,23 +141,53 @@ export function isTargetInScope(targets: string[], cwd: string, tmpReal: string)
 	return { inScope: true, reason: "all targets under cwd or /tmp", resolved };
 }
 
-/** Static gate: only pure multi-target recursive rm commands can reach the model. */
-export function analyzeCommand(command: string, cwd: string): { eligible: true; targets: string[] } | { eligible: false; reason: string } {
+/**
+ * Static gate with a three-way verdict: "absent" (no recursive rm — pi's normal
+ * flow applies), "defer" (recursive rm present but not judgeable — human), or
+ * "eligible" (literal targets inside cwd//tmp — decision model may approve).
+ */
+export type CommandVerdict =
+	| { kind: "absent" }
+	| { kind: "defer"; reason: string }
+	| { kind: "eligible"; targets: string[] };
+
+export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	const home = process.env.HOME ?? "";
 	const segments = splitSegments(command);
-	if (segments.length === 0) return { eligible: false, reason: "empty command" };
+	if (segments.length === 0) return { kind: "defer", reason: "empty command" };
 
+	let sawRecursive = false;
+	let sawPlainRm = false;
+	let rmDeferred = false;
+	let reason = "";
 	const targets: string[] = [];
 	for (const segment of segments) {
 		const verdict = analyzeSegment(segment, home);
-		if ("defer" in verdict) return { eligible: false, reason: verdict.defer };
-		targets.push(...verdict.targets);
+		if ("targets" in verdict) {
+			sawRecursive = true;
+			targets.push(...verdict.targets);
+		} else if (verdict.defer === "segment is not a plain rm invocation") {
+			// An rm hiding behind sudo/env/xargs must defer; a segment with no rm
+			// at all is not this gate's concern.
+			if (/(^|[\s/])rm(\s|$)/.test(segment)) {
+				rmDeferred = true;
+				reason = "rm is not in leading position";
+			}
+		} else {
+			if (verdict.defer === "rm without a recursive flag") sawPlainRm = true;
+			else {
+				rmDeferred = true;
+				reason = verdict.defer;
+			}
+		}
 	}
+	if (!sawRecursive && !rmDeferred) return { kind: "absent" };
+	if (rmDeferred || sawPlainRm) return { kind: "defer", reason: reason || "mixed recursive and non-recursive rm" };
 
 	const tmpReal = resolveReal("/tmp", cwd);
 	const scope = isTargetInScope(targets, cwd, tmpReal);
-	if (!scope.inScope) return { eligible: false, reason: scope.reason };
-	return { eligible: true, targets };
+	if (!scope.inScope) return { kind: "defer", reason: scope.reason };
+	return { kind: "eligible", targets };
 }
 
 /**

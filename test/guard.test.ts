@@ -18,21 +18,30 @@ symlinkSync(homeOutside, path.join(proj, "leak"));
 const eligible = (cmd: string) => analyzeCommand(cmd, proj);
 const defer = (cmd: string) => {
 	const r = analyzeCommand(cmd, proj);
-	assert.equal(r.eligible, false, `expected defer: ${cmd} -> ${JSON.stringify(r)}`);
+	assert.equal(r.kind, "defer", `expected defer: ${cmd} -> ${JSON.stringify(r)}`);
+};
+const absent = (cmd: string) => {
+	const r = analyzeCommand(cmd, proj);
+	assert.equal(r.kind, "absent", `expected absent: ${cmd} -> ${JSON.stringify(r)}`);
 };
 
 test("recursive rm with literal targets under cwd is eligible", () => {
-	assert.deepEqual(eligible("rm -rf node_modules/.cache"), { eligible: true, targets: ["node_modules/.cache"] });
-	assert.equal(eligible("rm -rf build dist").eligible, true);
-	assert.equal(eligible("rm -fr dist").eligible, true);
-	assert.equal(eligible("rm -Rf ./dist").eligible, true);
-	assert.equal(eligible("/bin/rm -rf dist").eligible, true);
-	assert.equal(eligible("rm --one-file-system -rf dist").eligible, true);
-	assert.equal(eligible("rm -rf -- dist").eligible, true);
+	assert.deepEqual(eligible("rm -rf node_modules/.cache"), { kind: "eligible", targets: ["node_modules/.cache"] });
+	assert.equal(eligible("rm -rf build dist").kind, "eligible");
+	assert.equal(eligible("rm -fr dist").kind, "eligible");
+	assert.equal(eligible("rm -Rf ./dist").kind, "eligible");
+	assert.equal(eligible("/bin/rm -rf dist").kind, "eligible");
+	assert.equal(eligible("rm --one-file-system -rf dist").kind, "eligible");
+	assert.equal(eligible("rm -rf -- dist").kind, "eligible");
+});
+
+test("benign non-rm segments pass through with the judged rm", () => {
+	assert.equal(eligible("rm -rf dist; echo done").kind, "eligible");
+	assert.equal(eligible("echo hi && rm -rf dist").kind, "eligible");
 });
 
 test("recursive rm on a /tmp target is eligible", () => {
-	assert.equal(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-123`).eligible, true);
+	assert.equal(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-123`).kind, "eligible");
 });
 
 test("variable indirection, globs, quotes and substitution defer", () => {
@@ -45,11 +54,23 @@ test("variable indirection, globs, quotes and substitution defer", () => {
 	defer('rm -rf "my dir"');
 });
 
-test("non-rm segments defer the whole command", () => {
-	defer("rm -rf dist; echo done");
-	defer("echo hi && rm -rf dist");
+test("non-rm commands are absent from the gate entirely", () => {
+	absent("ls -la /tmp | head");
+	absent("test -e x && echo gone");
+	absent("rm notes.txt"); // plain rm is pi's normal flow, not this gate
+});
+
+test("rm not in leading position defers", () => {
 	defer("sudo rm -rf dist");
+	defer("FOO=bar rm -rf dist");
+	defer("find . | xargs rm -rf");
+});
+
+test("mixed recursive and non-recursive rm defers", () => {
 	defer("rm -rf dist && rm notes.txt");
+});
+
+test("redirections and mixed-gate constructs defer", () => {
 	defer("rm -rf dist > /dev/null");
 	defer("cd build && rm -rf .");
 });
@@ -69,8 +90,8 @@ test("whole-project deletion defers even though it is in scope", () => {
 	defer("rm -rf .");
 });
 
-test("non-recursive rm is not eligible", () => {
-	assert.equal(eligible("rm notes.txt").eligible, false);
+test("non-recursive rm alone is absent from the gate", () => {
+	absent("rm notes.txt");
 });
 
 test("realpath resolves new leaves through their existing ancestor", () => {

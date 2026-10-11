@@ -60,17 +60,27 @@ export function createRmGuard(pi: ExtensionAPI, config: RmGuardConfig) {
 			: createDecisionsBackend({ url: config.decisionsUrl, model: config.decisionsModel, timeoutMs: config.timeoutMs });
 	const threshold = config.threshold ?? backend.defaultThreshold;
 
+	// The current turn's user message is not yet in getBranch() when tool_call
+	// fires, so the prompt is captured at agent start and used as the intent.
+	let currentPrompt = "";
+	pi.on("before_agent_start", async (event) => {
+		currentPrompt = event.prompt.trim();
+	});
+
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "bash") return undefined;
 		const command = event.input.command;
 		if (typeof command !== "string") return undefined;
 
 		const analysis = analyzeCommand(command, ctx.cwd);
-		if (!analysis.eligible) {
+		if (analysis.kind === "absent") return undefined;
+		if (analysis.kind === "defer") {
 			return requireHuman(ctx, command, analysis.reason, "ineligible", []);
 		}
 
-		const intent = recentUserMessages(pi, 2).join(" | ") || "(no recent user request in session)";
+		const recent = recentUserMessages(pi, 2);
+		const intentParts = [...recent, currentPrompt].filter((m) => m.length > 0 && !recent.includes(m));
+		const intent = intentParts.join(" | ") || "(no recent user request in session)";
 		const decision = await backend.decide({ command, intent });
 
 		if ("error" in decision) {
