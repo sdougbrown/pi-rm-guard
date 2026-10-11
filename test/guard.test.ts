@@ -54,6 +54,24 @@ test("variable indirection, globs, quotes and substitution defer", () => {
 	defer('rm -rf "my dir"');
 });
 
+test("literal assignments from the same command are substituted", () => {
+	assert.equal(eligible("WT=/tmp/x; rm -rf $WT").kind, "eligible");
+	assert.equal(eligible("WT=./dist; rm -rf $WT").kind, "eligible");
+	assert.equal(eligible("export WT=./dist; rm -rf ${WT}").kind, "eligible");
+});
+
+test("assignment values that cannot be resolved keep the target unresolvable", () => {
+	defer("WT=$(ls -d /tmp/wt-verify.* | tail -1); rm -rf $WT");
+	defer("WT=$(ls -d /tmp/wt-verify.* | tail -1)\nrm -rf $WT");
+	defer('WT=$(ls -d /tmp/x | tail -1); rm -rf "$WT"');
+	defer("rm -rf ${WT}");
+});
+
+test("last assignment wins and stays scope-checked", () => {
+	defer("WT=/tmp/a; WT=/etc; rm -rf $WT");
+	defer("WT=/etc; rm -rf $WT");
+});
+
 test("non-rm commands are absent from the gate entirely", () => {
 	absent("ls -la /tmp | head");
 	absent("test -e x && echo gone");

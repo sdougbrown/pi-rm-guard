@@ -40,6 +40,27 @@ function splitSegments(command: string): string[] {
 		.filter((s) => s.length > 0);
 }
 
+/**
+ * Literal assignments from earlier segments in the same command (NAME=value,
+ * optionally exported). Values with any expansion defer later, so this only
+ * ever substitutes text that is literally present in the command itself.
+ */
+function literalAssignments(segments: string[]): Map<string, string> {
+	const vars = new Map<string, string>();
+	for (const segment of segments) {
+		const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(segment);
+		if (match && !hasUnresolvableChars(match[2])) vars.set(match[1], match[2]);
+	}
+	return vars;
+}
+
+function substituteVars(target: string, vars: Map<string, string>): string | undefined {
+	return target.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (whole, braced, plain) => {
+		const value = vars.get(braced ?? plain);
+		return value === undefined ? whole : value;
+	});
+}
+
 /** Expand a leading ~ or ~/... to $HOME; everything else is left for path.resolve. */
 function expandTilde(target: string, home: string): string {
 	if (target === "~") return home;
@@ -51,7 +72,7 @@ function expandTilde(target: string, home: string): string {
  * Judge one rm segment. Returns its literal targets or a defer reason.
  * Targets are returned unexpanded; path resolution happens in isTargetInScope.
  */
-function analyzeSegment(segment: string, home: string): { targets: string[] } | { defer: string } {
+function analyzeSegment(segment: string, home: string, vars: Map<string, string>): { targets: string[] } | { defer: string } {
 	const tokens = segment.split(/\s+/).filter(Boolean);
 	let i = 0;
 	if (tokens[i] !== "rm" && !tokens[i].endsWith("/rm")) {
@@ -74,10 +95,12 @@ function analyzeSegment(segment: string, home: string): { targets: string[] } | 
 			if (isRecursiveFlag(token)) sawRecursive = true;
 			continue;
 		}
-		if (hasUnresolvableChars(token)) {
+		const expanded = expandTilde(token, home);
+		const substituted = substituteVars(expanded, vars);
+		if (hasUnresolvableChars(substituted)) {
 			return { defer: `target is not statically resolvable: ${token}` };
 		}
-		targets.push(expandTilde(token, home));
+		targets.push(expandTilde(substituted, home));
 	}
 
 	if (!sawRecursive) return { defer: "rm without a recursive flag" };
@@ -160,9 +183,10 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	let sawPlainRm = false;
 	let rmDeferred = false;
 	let reason = "";
+	const vars = literalAssignments(segments);
 	const targets: string[] = [];
 	for (const segment of segments) {
-		const verdict = analyzeSegment(segment, home);
+		const verdict = analyzeSegment(segment, home, vars);
 		if ("targets" in verdict) {
 			sawRecursive = true;
 			targets.push(...verdict.targets);
