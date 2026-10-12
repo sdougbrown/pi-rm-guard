@@ -13,9 +13,12 @@
  * Both request streams are appended to <stateDir>/chat-requests.jsonl and
  * <stateDir>/decisions-requests.jsonl as evidence.
  *
- * Usage: node stub-servers.mjs <stateDir>
+ * Usage: node stub-servers.mjs <stateDir> [--selftest]
  * Emits {"chatPort":N,"decisionsPort":N,"pid":N} on stdout and writes ports.json.
  * Run in the foreground; the caller records the PID and kills it on cleanup.
+ * With --selftest the process drives both endpoints in-process and exits
+ * 0/1 instead of staying up (self-contained harness check; writes its own
+ * directive.json and decision.json into <stateDir>).
  */
 import http from "node:http";
 import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs";
@@ -72,9 +75,30 @@ const decisions = http.createServer((req, res) => {
 	req.on("data", (c) => (body += c));
 	req.on("end", () => {
 		appendFileSync(`${stateDir}/decisions-requests.jsonl`, body + "\n");
-		const d = readJSON(`${stateDir}/decision.json`, { action: "A", probabilities: { A: 0.95, B: 0.03, C: 0.02 } });
+		const DECISION_FILE = `${stateDir}/decision.json`;
+		let decision;
+		try {
+			decision = JSON.parse(readFileSync(DECISION_FILE, "utf8"));
+		} catch (err) {
+			if (err.code === "ENOENT") {
+				// Absent file: fall back to the default verdict (approve), as before.
+				decision = { action: "A", probabilities: { A: 0.95, B: 0.03, C: 0.02 } };
+			} else {
+				// Present but unparseable: fail closed — 500 makes the guard record a
+				// model error and defer. A typo'd verdict must not silently approve.
+				const msg = `stub-servers: ${DECISION_FILE} is present but unparseable (${err.message}) — responding 500 so the guard defers`;
+				console.error(msg);
+				try {
+					writeFileSync(`${stateDir}/decision-error.txt`, `${msg}\n${err.stack ?? ""}\n`);
+				} catch {}
+				res.statusCode = 500;
+				res.setHeader("content-type", "application/json");
+				res.end(JSON.stringify({ error: "decision.json unparseable" }));
+				return;
+			}
+		}
 		res.setHeader("content-type", "application/json");
-		res.end(JSON.stringify({ answers: { action: { choice: d.action, probabilities: d.probabilities } } }));
+		res.end(JSON.stringify({ answers: { action: { choice: decision.action, probabilities: decision.probabilities } } }));
 	});
 });
 
@@ -91,4 +115,54 @@ const shutdown = () => {
 };
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+
+if (process.argv[3] === "--selftest") {
+	const fail = (msg) => {
+		console.error(`selftest: FAIL — ${msg}`);
+		process.exit(1);
+	};
+	try {
+		const directive = { command: "rm -rf /tmp/rmguard-selftest-victim" };
+		const decision = { action: "A", probabilities: { A: 0.95, B: 0.03, C: 0.02 } };
+		writeFileSync(`${stateDir}/directive.json`, JSON.stringify(directive));
+		writeFileSync(`${stateDir}/decision.json`, JSON.stringify(decision));
+
+		// Chat endpoint: minimal chat-completions request (stream true) must yield
+		// an SSE stream with a bash tool call carrying the directive command.
+		const chatRes = await fetch(`http://127.0.0.1:${chatPort}/v1/chat/completions`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "stub", stream: true, messages: [{ role: "user", content: "delete the build artifacts" }] }),
+		});
+		if (!chatRes.ok) fail(`chat endpoint returned HTTP ${chatRes.status}`);
+		const sse = await chatRes.text();
+		let command;
+		for (const frame of sse.split("\n\n")) {
+			if (!frame.startsWith("data: ") || frame.includes("[DONE]")) continue;
+			const chunk = JSON.parse(frame.slice(6));
+			const args = chunk.choices?.[0]?.delta?.tool_calls?.[0]?.function?.arguments;
+			if (args) command = JSON.parse(args).command;
+		}
+		if (!command) fail("no bash tool call with arguments in the SSE stream");
+		if (command !== directive.command) fail(`tool call command ${JSON.stringify(command)} != directive ${JSON.stringify(directive.command)}`);
+
+		// Decisions endpoint: response must be {answers:{action:{choice,probabilities}}}
+		// echoing the known decision.json.
+		const decRes = await fetch(`http://127.0.0.1:${decPort}/v1/decisions`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ command: directive.command, intent: "selftest" }),
+		});
+		if (!decRes.ok) fail(`decisions endpoint returned HTTP ${decRes.status}`);
+		const answer = (await decRes.json())?.answers?.action;
+		if (!answer || answer.choice !== decision.action || JSON.stringify(answer.probabilities) !== JSON.stringify(decision.probabilities))
+			fail(`decisions response does not echo decision.json: ${JSON.stringify(answer)}`);
+
+		console.log("selftest: OK");
+		process.exit(0);
+	} catch (err) {
+		fail(err?.message ?? String(err));
+	}
+}
+
 setInterval(() => {}, 1 << 30);

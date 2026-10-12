@@ -103,6 +103,12 @@ a "defer" whose marker was deleted is a failure. The marker is created fresh
 by each run under `/tmp/rmguard-verify-victim`, which is inside the guard's
 scope by design (`/tmp` is judgeable). Never point cases at real user data.
 
+`run-case.sh` enforces these end states: every documented case maps in its
+`expectation_for` table to an expected marker state, a session-entry field
+check, and an expected decisions-call count. On mismatch it prints
+`assert: FAIL (<case>) — …` and exits 1; on match `assert: OK (<case>)`.
+Cases not in the table run print-only and say `assert: none (unmapped case)`.
+
 ## Cleanup
 
 `run-case.sh` kills only the stub PID it recorded (trap on EXIT) and leaves
