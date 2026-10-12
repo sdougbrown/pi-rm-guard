@@ -17,6 +17,18 @@ if ! (cd "$REPO" && npm test >/dev/null 2>&1); then
 	ok=0
 fi
 
+# Prove the harness itself runs: the stub engines self-test both endpoints in
+# one process (no leftover stubs). A broken stub would generate wrong proofs.
+SELFTEST_DIR="$(mktemp -d)"
+if node "$REPO/skills/verify-pi-rm-guard/helpers/stub-servers.mjs" "$SELFTEST_DIR" --selftest > /tmp/rmguard-selftest.log 2>&1; then
+	echo "stub selftest: OK"
+else
+	echo "FAIL: stub-servers.mjs --selftest did not pass; the stub harness itself is broken"
+	cat /tmp/rmguard-selftest.log
+	ok=0
+fi
+rm -rf "$SELFTEST_DIR" /tmp/rmguard-selftest.log
+
 # Port check is done per-case by run-case.sh (ephemeral ports); here we only
 # verify no stale stub from a crashed earlier run is holding the evidence dir.
 if pgrep -f "stub-servers.mjs" >/dev/null 2>&1; then
