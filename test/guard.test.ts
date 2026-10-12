@@ -201,5 +201,29 @@ test("heredoc inside a double-quoted command substitution is data", () => {
 	// the exact shape that blocked a git commit in practice
 	absent('git add file && git commit -m "$(cat <<\'EOF\'\nmessage mentioning rm -rf /\nhere\nEOF\n)" && git push');
 	absent('git commit -m "$(cat <<\'EOF\'\ndeny("rm -rf /*")\nEOF\n)"');
-	assert.deepEqual(eligible('rm -rf dist <<\'EOF\'\nbody\nEOF'), { kind: "eligible", targets: ["dist"] });
+});
+
+test("<< inside arithmetic is a left shift, not a heredoc", () => {
+	absent("echo $(( 1<<2 ))");
+	absent("a=$((1<<2))");
+	absent("((1<<2))");
+	absent('echo "$((1<<2))"');
+	absent("x=$((1<<2))");
+	absent("[[ 1<<2 == 4 ]] 2>/dev/null || true");
+	// the umpire's confirmed regression shape: a real rm after the arithmetic is still judged
+	assert.deepEqual(eligible("echo $(( 1<<2 ))\nrm -rf /tmp/build-123"), {
+		kind: "eligible",
+		targets: ["/tmp/build-123"],
+	});
+	assert.deepEqual(eligible("x=$((1<<2)); rm -rf dist"), { kind: "eligible", targets: ["dist"] });
+	assert.deepEqual(eligible("[[ 1<<2 -eq 4 ]] && rm -rf dist"), { kind: "eligible", targets: ["dist"] });
+});
+
+test("heredoc delimiter may be space-separated from <<", () => {
+	absent("cat << EOF\nrm -rf x\nEOF");
+});
+
+test("delimiter dequoting: quotes and backslashes in the delimiter are not part of the terminator", () => {
+	absent('cat <<E"OF"\nrm -rf x\nEOF');
+	absent("cat <<E\\OF\nrm -rf x\nEOF");
 });

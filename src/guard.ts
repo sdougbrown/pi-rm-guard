@@ -195,22 +195,46 @@ function expandTilde(target: string, home: string): string {
 	return target;
 }
 
-/** Parse the delimiter spec at line[i] ("<<", optional "-", optional quote, name); null when not a usable heredoc. */
+/** Parse the delimiter spec at line[i] ("<<", optional "-", dequoting quotes and backslashes per bash); null when not a usable heredoc. */
 function parseHeredocDelim(line: string, i: number): { text: string; stripTabs: boolean; end: number } | null {
 	let j = i + 2;
+	while (line[j] === " " || line[j] === "\t") j++;
 	const stripTabs = line[j] === "-";
-	if (stripTabs) j++;
+	if (stripTabs) {
+		j++;
+		while (line[j] === " " || line[j] === "\t") j++;
+	}
 	let delim = "";
 	let delimQuote: string | null = null;
-	if (line[j] === "'" || line[j] === '"') {
-		delimQuote = line[j];
-		j++;
+	while (j < line.length) {
+		const c = line[j];
+		if (delimQuote) {
+			if (c === delimQuote) {
+				delimQuote = null;
+				j++;
+				continue;
+			}
+			delim += c;
+			j++;
+			continue;
+		}
+		if (c === "\\" && j + 1 < line.length) {
+			delim += line[j + 1];
+			j += 2;
+			continue;
+		}
+		if (c === "'" || c === '"') {
+			delimQuote = c;
+			j++;
+			continue;
+		}
+		if (/[A-Za-z0-9_]/.test(c)) {
+			delim += c;
+			j++;
+			continue;
+		}
+		break;
 	}
-	while (j < line.length && /[A-Za-z0-9_]/.test(line[j])) {
-		delim += line[j];
-		j++;
-	}
-	if (delimQuote && line[j] === delimQuote) j++;
 	if (delim.length === 0) return null;
 	return { text: delim, stripTabs, end: j };
 }
@@ -224,12 +248,17 @@ function parseHeredocDelim(line: string, i: number): { text: string; stripTabs: 
  * heredoc whose delimiter line never appears — the gate cannot know where the
  * body ends, so the caller must defer. The delimiter must be a whole line
  * (leading tabs allowed for <<-), and bodies accumulate in FIFO order when a
- * line declares several heredocs.
+ * line declares several heredocs. `<<` inside arithmetic ($((..)), ((..)),
+ * $[..]) and test ([[..]]) contexts is a left shift, not a heredoc, so
+ * operator detection is skipped there; case patterns and =~ are not tracked
+ * because heredocs are legal inside case bodies, and a << in a case pattern
+ * is pathological.
  */
 export function stripHeredocBodies(command: string): { command: string; unterminated: boolean } {
 	const lines = command.split("\n");
 	const out: string[] = [];
 	const pending: { text: string; stripTabs: boolean }[] = [];
+	const contexts: { type: "arith" | "test" | "subst"; depth: number }[] = [];
 	for (const line of lines) {
 		if (pending.length > 0) {
 			// this line is heredoc body: it is data, except when it exactly closes
@@ -241,34 +270,56 @@ export function stripHeredocBodies(command: string): { command: string; untermin
 		}
 		let result = "";
 		let quote: string | null = null;
-		// bash: inside "$( ... )" the outer double quote does not close until after
-		// the matching ")", and heredocs nested in the substitution are real — so
-		// track the substitution and keep detecting operators while inside it.
-		let substDepth = 0;
 		for (let i = 0; i < line.length; i++) {
 			const ch = line[i];
-			if (quote === '"' && ch === "$" && line[i + 1] === "(") {
-				result += "$(";
-				i++;
-				substDepth = 1;
-				continue;
-			}
-			if (quote === '"' && substDepth > 0) {
-				if (ch === "(") substDepth++;
-				if (ch === ")") {
-					substDepth--;
-					if (substDepth === 0) result += ")";
+			const top = contexts[contexts.length - 1];
+			// bash: inside "$( ... )" the outer double quote does not close until
+			// after the matching ")", and heredocs nested there are real
+			const inDqSubst = quote === '"' && top !== undefined && top.type === "subst";
+			if (inDqSubst) {
+				if (ch === "(") {
+					top.depth++;
+					if (top.depth === 2 && line[i - 1] === "(" && line[i - 2] === "$") top.type = "arith";
+					result += ch;
 					continue;
 				}
-				if (ch === "<" && line[i + 1] === "<" && line[i + 2] !== "<") {
-					const delim = parseHeredocDelim(line, i);
-					if (delim) {
-						pending.push(delim);
-						i = delim.end - 1;
+				if (ch === ")") {
+					top.depth--;
+					result += ch;
+					if (top.depth === 0) {
+						contexts.pop();
+						if (line[i + 1] === '"') {
+							result += '"';
+							i++;
+						}
+						quote = null;
+					}
+					continue;
+				}
+				if (ch === "<" && line[i + 1] === "<") {
+					if (line[i + 2] === "<") {
+						result += "<<<";
+						i += 2;
 						continue;
 					}
+					if (top.type === "subst") {
+						const delim = parseHeredocDelim(line, i);
+						if (delim) {
+							pending.push({ text: delim.text, stripTabs: delim.stripTabs });
+							i = delim.end - 1;
+							continue;
+						}
+					}
+					result += ch;
+					continue;
 				}
 				result += ch;
+				continue;
+			}
+			if (quote === '"' && ch === "$" && line[i + 1] === "(") {
+				contexts.push({ type: "subst", depth: 1 });
+				result += "$(";
+				i++;
 				continue;
 			}
 			if (quote) {
@@ -286,7 +337,65 @@ export function stripHeredocBodies(command: string): { command: string; untermin
 				i++;
 				continue;
 			}
-			if (ch === "<" && line[i + 1] === "<") {
+			if (ch === "$" && line[i + 1] === "(") {
+				if (line[i + 2] === "(") {
+					contexts.push({ type: "arith", depth: 2 });
+					result += "$((";
+					i += 2;
+					continue;
+				}
+				contexts.push({ type: "subst", depth: 1 });
+				result += "$(";
+				i++;
+				continue;
+			}
+			if (ch === "(" && line[i + 1] === "(") {
+				contexts.push({ type: "arith", depth: 2 });
+				result += "((";
+				i++;
+				continue;
+			}
+			if (ch === "[" && line[i + 1] === "[") {
+				contexts.push({ type: "test", depth: 2 });
+				result += "[[";
+				i++;
+				continue;
+			}
+			if (ch === "$" && line[i + 1] === "[") {
+				contexts.push({ type: "arith", depth: 1 });
+				result += "$[";
+				i++;
+				continue;
+			}
+			if (top && top.type === "subst" && ch === "(") {
+				top.depth++;
+				result += ch;
+				continue;
+			}
+			if (top && top.type === "subst" && ch === ")") {
+				top.depth--;
+				result += ch;
+				if (top.depth === 0) contexts.pop();
+				continue;
+			}
+			if (top && top.type === "arith" && ch === ")" && line[i + 1] === ")") {
+				contexts.pop();
+				result += "))";
+				i++;
+				continue;
+			}
+			if (top && top.type === "arith" && ch === "]") {
+				contexts.pop();
+				result += ch;
+				continue;
+			}
+			if (top && top.type === "test" && ch === "]" && line[i + 1] === "]") {
+				contexts.pop();
+				result += "]]";
+				i++;
+				continue;
+			}
+			if (ch === "<" && line[i + 1] === "<" && (!top || top.type === "subst")) {
 				if (line[i + 2] === "<") {
 					// here-string: same-line data, not a heredoc
 					result += "<<<";
@@ -295,7 +404,7 @@ export function stripHeredocBodies(command: string): { command: string; untermin
 				}
 				const delim = parseHeredocDelim(line, i);
 				if (delim) {
-					pending.push(delim);
+					pending.push({ text: delim.text, stripTabs: delim.stripTabs });
 					i = delim.end - 1;
 					continue;
 				}

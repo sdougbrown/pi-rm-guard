@@ -119,7 +119,9 @@ expectation_for() {
 		low-conf)         echo "SURVIVED|gate=low-confidence autoApproved=false|1" ;;
 		deny|deny-root)   echo "SURVIVED|gate=denied|0" ;;
 		defer|defer-glob|defer-var|glob-unbounded) echo "SURVIVED|gate=ineligible|0" ;;
-		absent|heredoc-mention) echo "SURVIVED|absent|0" ;;
+		absent)           echo "DELETED|absent|0" ;;
+		heredoc-mention)  echo "SURVIVED|absent|0" ;;
+		arith-shift)      echo "DELETED|action=approve autoApproved=true|1" ;;
 		heredoc-delete)   echo "DELETED|action=approve autoApproved=true|1" ;;
 		*)                echo "" ;;
 	esac
