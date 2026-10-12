@@ -42,7 +42,7 @@ $H/run-case.sh low-conf 'rm -rf /tmp/rmguard-verify-victim' '{"action":"B","prob
   target that is in-scope but model-denied (the classifier/decisions stub
   decides on intent, not path).
 - Thresholds are configurable (`RM_GUARD_THRESHOLD`); if you change them, the
-  probabilities used here (0.95 approve / 0.10 deny) must still straddle the
+  probabilities used here (0.95 above the threshold / 0.10 below it) must still straddle the
   configured threshold — adjust the stub probabilities, not the assertion.
 - A backend error must defer, not block silently: point `RM_GUARD_URL` at a
   dead port (e.g. 127.0.0.1:9) and expect the fail-closed block plus a
