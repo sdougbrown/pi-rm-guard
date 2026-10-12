@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { createDecisionsBackend, createJevBackend } from "../src/backends.ts";
+import { buildDecisionsInput, createDecisionsBackend, createJevBackend } from "../src/backends.ts";
 
 const choiceResponse = (approve: number, ask: number, deny: number) =>
 	new Response(
@@ -15,6 +15,15 @@ const choiceResponse = (approve: number, ask: number, deny: number) =>
 		}),
 		{ status: 200, headers: { "content-type": "application/json" } },
 	);
+
+test("decisions input states the resolved targets and the gate-verified scope", () => {
+	const withTargets = buildDecisionsInput("rm -rf dist tmp-x", "delete dist", ["dist", "/tmp/x"]);
+	assert.match(withTargets, /Deleting: dist, \/tmp\/x/);
+	assert.match(withTargets, /static safety gate has verified/);
+	assert.match(withTargets, /'ask the human', not deny/);
+	const noTargets = buildDecisionsInput("rm -rf *", "(no recent user request in session)");
+	assert.match(noTargets, /Deleting: the command's targets/);
+});
 
 test("decisions backend maps the 3-way choice to approve/deny/defer", async () => {
 	let captured: RequestInit | undefined;
