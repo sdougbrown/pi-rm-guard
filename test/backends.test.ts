@@ -36,13 +36,14 @@ test("decisions backend maps the 3-way choice to approve/deny/defer", async () =
 			return choiceResponse(0.99, 0.005, 0.005);
 		},
 	});
-	const result = await backend.decide({ command: "rm -rf dist", intent: "clean up" });
+	const result = await backend.decide({ command: "rm -rf dist", intent: "clean up", targets: ["dist"] });
 	assert.deepEqual(result, { action: "approve", probability: 0.99 });
 	const body = JSON.parse(String(captured?.body));
 	assert.equal(body.model, "test-model");
 	assert.equal(body.questions[0].type, "choice");
 	assert.equal(body.questions.length, 1);
 	assert.match(body.input, /rm -rf dist/);
+	assert.match(body.input, /Deleting: dist/);
 	assert.match(body.input, /clean up/);
 
 	const deny = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.001, 0.001, 0.999) }).decide({ command: "rm -rf /", intent: "i" });
