@@ -293,9 +293,11 @@ function globComponentToRegex(component: string): RegExp {
  *
  * The literal prefix (components before the first glob) is denied on its own
  * for root/system/home: `rm -rf /etc/foo*` must not become eligible merely
- * because it matches nothing. Matches are then resolved and scope-checked
- * individually, so a symlink that matches the pattern and points outside
- * cwd//tmp is caught (realpath resolution, same as literal targets).
+ * because it matches nothing. Matches are NOT guaranteed in-tree: a literal
+ * component after the glob is realpath'd and may escape via symlink — the
+ * safety net is the per-match realpath re-resolution in isTargetInScope, so a
+ * symlink matching the pattern and pointing outside cwd//tmp is caught the
+ * same way as literal targets.
  *
  * Known limit: rm re-globs at execution, so a file created in the checked
  * directory between this expansion and the rm run is also deleted. The pattern's
@@ -447,6 +449,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	let sawRecursive = false;
 	let sawPlainRm = false;
 	let rmDeferred = false;
+	let sawGlobTarget = false;
 	let reason = "";
 	const vars = literalAssignments(segments);
 	const targets: string[] = [];
@@ -470,6 +473,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 			const verdict = analyzeSegment(segment, home, vars);
 			if ("targets" in verdict) {
 				sawRecursive = true;
+				if (verdict.targets.some((t) => t.includes("*") || t.includes("?"))) sawGlobTarget = true;
 				targets.push(...verdict.targets);
 			} else if (verdict.defer === "rm without a recursive flag") {
 				sawPlainRm = true;
@@ -499,6 +503,14 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 
 	if (!sawRecursive && !rmDeferred) return { kind: "absent" };
 	if (rmDeferred || sawPlainRm) return { kind: "defer", reason: reason || "mixed recursive and non-recursive rm" };
+	// TOCTOU across segments: a prior segment (ln -s /etc /tmp/d/a.txt) can
+	// create a target the glob follows when bash re-expands at execution time,
+	// after this gate's expansion saw nothing (or an in-scope tree). A glob rm
+	// in a multi-segment command therefore defers; single-segment glob rm keeps
+	// the expansion-based judgment.
+	if (sawGlobTarget && segments.length > 1) {
+		return { kind: "defer", reason: "glob rm alongside other segments — a prior segment could create a target the glob follows at execution time" };
+	}
 
 	const tmpReal = resolveReal("/tmp", cwd);
 	// Expand glob targets before the scope check so every path the shell would

@@ -65,20 +65,22 @@ test("bounded globs expand in the gate and are eligible with expanded targets", 
 
 test("dot-anchored glob matches dotfiles; a non-dot pattern skips them (bash semantics)", () => {
 	const tmpDir = path.join("/tmp", `rmguard-tmp-${process.pid}`);
-	writeFileSync(path.join(tmpDir, ".cache-junk"), "x");
-	writeFileSync(path.join(tmpDir, "cache-junk"), "x");
+	const dotDir = path.join(tmpDir, "dotcheck");
+	mkdirSync(dotDir, { recursive: true });
+	writeFileSync(path.join(dotDir, ".cache-junk"), "x");
+	writeFileSync(path.join(dotDir, "cache-junk"), "x");
 	// dot-anchored pattern: the dotfile is part of the judged delete set
-	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/.cache-*`), {
+	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/dotcheck/.cache-*`), {
 		kind: "eligible",
-		targets: [`/tmp/rmguard-tmp-${process.pid}/.cache-junk`],
+		targets: [`/tmp/rmguard-tmp-${process.pid}/dotcheck/.cache-junk`],
 	});
 	// non-dot pattern: the dotfile must NOT appear in the judged targets
 	// (bash would not pass it to rm either); the plain file is judged. A
 	// leading-* pattern regex-matches the dotfile, so this case only passes
 	// when the dotfile skip actually runs.
-	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/*cache*`), {
+	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/dotcheck/*cache*`), {
 		kind: "eligible",
-		targets: [`/tmp/rmguard-tmp-${process.pid}/cache-junk`],
+		targets: [`/tmp/rmguard-tmp-${process.pid}/dotcheck/cache-junk`],
 	});
 });
 
@@ -160,6 +162,30 @@ test("mixed literal and glob targets in one rm are each judged", () => {
 test("a dot-only glob component defers (stricter than 'any literal character')", () => {
 	// the check requires an alphanumeric/_/- character, so ".*" is unbounded
 	defer(`rm -rf /tmp/rmguard-tmp-${process.pid}/.*`);
+});
+
+test("glob rm in a multi-segment command defers (prior segment could create a symlink the glob follows)", () => {
+	defer("ln -s /etc /tmp/d/a.txt && rm -rf /tmp/d/a.txt/*");
+	defer("mkdir -p /tmp/d && rm -rf /tmp/d/*");
+	// single-segment glob rm is unaffected
+	assert.equal(eligible("rm -rf /tmp/rmguard-tmp-" + process.pid + "/build-123").kind, "eligible");
+});
+
+test("out-of-scope literal prefix defers even with zero matches", () => {
+	defer("rm -rf /home/other-user/project/build-*");
+	defer("rm -rf /home/other-user/project/file-*");
+});
+
+test("literal component after a glob resolves to the targeted files", () => {
+	mkdirSync(path.join(proj, "node_modules/cache-a"), { recursive: true });
+	mkdirSync(path.join(proj, "node_modules/cache-b"), { recursive: true });
+	writeFileSync(path.join(proj, "node_modules/cache-a/package.json"), "{}");
+	// a join bug resolving to the matched directory instead of the file would
+	// still be in scope — this pins the resolution to the file exactly
+	assert.deepEqual(eligible("rm -rf node_modules/cach*/package.json"), {
+		kind: "eligible",
+		targets: [`${proj}/node_modules/cache-a/package.json`],
+	});
 });
 
 test("benign non-rm segments pass through with the judged rm", () => {

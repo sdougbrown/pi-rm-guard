@@ -5,6 +5,11 @@
 - A glob target is expanded by the static gate itself (never by the shell under
   the gate) and every match is judged like a literal path; the session entry
   records the expanded match list as `targets`.
+- A glob rm in a multi-segment command defers: a prior segment (`ln -s /etc
+  /tmp/d/a.txt`) can create a target the glob follows when bash re-expands at
+  execution time, after the gate's expansion saw nothing (TOCTOU). Also a
+  general bound: the gate does not analyze filesystem effects of non-rm
+  segments.
 - Bounds that keep a glob judgeable: every globbed component needs at least one
   alphanumeric, `_`, or `-` character (dot-only shapes like `.*` defer); expansion
   is capped at 64 matches; the literal prefix
