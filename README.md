@@ -19,6 +19,10 @@ literal targets:
   globs, quoted targets, command substitution, and redirections defer to a
   human. Exception: literal assignments earlier in the same command
   (`WT=/tmp/x; rm -rf $WT`) are substituted and checked like any literal path.
+- **Heredoc bodies are data** — an rm mention inside a heredoc (`<<'EOF'`,
+  `<<EOF`, `<<-EOF`, including inside a double-quoted command substitution) is
+  never executed as shell, so it is absent from the gate; a real rm beside a
+  heredoc is still judged; an unterminated heredoc defers.
 - **Scope** — every target must resolve (physically, per component) inside the
   session cwd or `/tmp`. Symlinks are followed during resolution, so a link
   inside the project pointing at `$HOME/.ssh` defers, and `link/../etc` cannot

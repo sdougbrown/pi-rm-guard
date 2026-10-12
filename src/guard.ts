@@ -195,6 +195,119 @@ function expandTilde(target: string, home: string): string {
 	return target;
 }
 
+/** Parse the delimiter spec at line[i] ("<<", optional "-", optional quote, name); null when not a usable heredoc. */
+function parseHeredocDelim(line: string, i: number): { text: string; stripTabs: boolean; end: number } | null {
+	let j = i + 2;
+	const stripTabs = line[j] === "-";
+	if (stripTabs) j++;
+	let delim = "";
+	let delimQuote: string | null = null;
+	if (line[j] === "'" || line[j] === '"') {
+		delimQuote = line[j];
+		j++;
+	}
+	while (j < line.length && /[A-Za-z0-9_]/.test(line[j])) {
+		delim += line[j];
+		j++;
+	}
+	if (delimQuote && line[j] === delimQuote) j++;
+	if (delim.length === 0) return null;
+	return { text: delim, stripTabs, end: j };
+}
+
+/**
+ * Remove heredoc bodies from the command: a heredoc body is input data for the
+ * consuming command, never executed as shell, so an rm mention inside it is
+ * not a command to judge (this is what produced the "unbalanced quoting
+ * around an rm mention" and "rm is not in leading position" defers on plain
+ * `git commit` heredocs). Returns unterminated=true when the command opens a
+ * heredoc whose delimiter line never appears — the gate cannot know where the
+ * body ends, so the caller must defer. The delimiter must be a whole line
+ * (leading tabs allowed for <<-), and bodies accumulate in FIFO order when a
+ * line declares several heredocs.
+ */
+export function stripHeredocBodies(command: string): { command: string; unterminated: boolean } {
+	const lines = command.split("\n");
+	const out: string[] = [];
+	const pending: { text: string; stripTabs: boolean }[] = [];
+	for (const line of lines) {
+		if (pending.length > 0) {
+			// this line is heredoc body: it is data, except when it exactly closes
+			// the oldest open heredoc
+			const first = pending[0];
+			const candidate = first.stripTabs ? line.replace(/^\t+/, "") : line;
+			if (candidate === first.text) pending.shift();
+			continue;
+		}
+		let result = "";
+		let quote: string | null = null;
+		// bash: inside "$( ... )" the outer double quote does not close until after
+		// the matching ")", and heredocs nested in the substitution are real — so
+		// track the substitution and keep detecting operators while inside it.
+		let substDepth = 0;
+		for (let i = 0; i < line.length; i++) {
+			const ch = line[i];
+			if (quote === '"' && ch === "$" && line[i + 1] === "(") {
+				result += "$(";
+				i++;
+				substDepth = 1;
+				continue;
+			}
+			if (quote === '"' && substDepth > 0) {
+				if (ch === "(") substDepth++;
+				if (ch === ")") {
+					substDepth--;
+					if (substDepth === 0) result += ")";
+					continue;
+				}
+				if (ch === "<" && line[i + 1] === "<" && line[i + 2] !== "<") {
+					const delim = parseHeredocDelim(line, i);
+					if (delim) {
+						pending.push(delim);
+						i = delim.end - 1;
+						continue;
+					}
+				}
+				result += ch;
+				continue;
+			}
+			if (quote) {
+				result += ch;
+				if (ch === quote) quote = null;
+				continue;
+			}
+			if (ch === "'" || ch === '"') {
+				quote = ch;
+				result += ch;
+				continue;
+			}
+			if (ch === "\\" && i + 1 < line.length) {
+				result += ch + line[i + 1];
+				i++;
+				continue;
+			}
+			if (ch === "<" && line[i + 1] === "<") {
+				if (line[i + 2] === "<") {
+					// here-string: same-line data, not a heredoc
+					result += "<<<";
+					i += 2;
+					continue;
+				}
+				const delim = parseHeredocDelim(line, i);
+				if (delim) {
+					pending.push(delim);
+					i = delim.end - 1;
+					continue;
+				}
+				// no delimiter characters: not a usable heredoc; keep scanning
+			}
+			result += ch;
+		}
+		out.push(result);
+	}
+	return { command: out.join("\n"), unterminated: pending.length > 0 };
+}
+
 /**
  * Judge one rm segment. Returns its literal targets or a defer reason.
  * Targets are returned unexpanded; path resolution happens in isTargetInScope.
@@ -326,7 +439,9 @@ export type CommandVerdict =
 
 export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	const home = process.env.HOME ?? "";
-	const segments = splitSegments(command);
+	const { command: withoutHeredocBodies, unterminated } = stripHeredocBodies(command);
+	if (unterminated) return { kind: "defer", reason: "unterminated heredoc — cannot tell where the body ends" };
+	const segments = splitSegments(withoutHeredocBodies);
 	if (segments.length === 0) return { kind: "defer", reason: "empty command" };
 
 	let sawRecursive = false;

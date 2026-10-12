@@ -167,3 +167,39 @@ test("cleanup", () => {
 	rmSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`), { recursive: true, force: true });
 	rmSync(path.join(process.env.HOME ?? "/tmp", `.rmguard-test-${process.pid}`), { recursive: true, force: true });
 });
+
+test("heredoc bodies are data, not commands", () => {
+	// rm mention inside a heredoc body never executes as shell
+	absent('git commit -m msg <<\'EOF\'\nrm -rf /\nEOF');
+	absent('git commit -F - <<EOF\nrm -rf /etc\nEOF');
+	absent('cat <<\'EOF\'\nrm -rf x\nEOF\necho done');
+	// a real rm beside a heredoc is still judged
+	assert.deepEqual(eligible("rm -rf dist <<'EOF'\nanything rm -rf here\nEOF"), {
+		kind: "eligible",
+		targets: ["dist"],
+	});
+	assert.deepEqual(eligible("rm -rf node_modules/.cache <<'EOF'\nbody\nEOF"), {
+		kind: "eligible",
+		targets: ["node_modules/.cache"],
+	});
+	deny("rm -rf / <<'EOF'\nbody\nEOF");
+	defer("rm -rf $CACHE_DIR <<'EOF'\nbody\nEOF");
+	// multiple heredocs, each body data
+	absent('cat <<A\nrm -rf x\nA\ncat <<\'B\'\nrm -rf /\nB');
+	// <<- strips leading tabs before matching the delimiter
+	absent('cat <<-EOF\n\trm -rf x\n\tEOF');
+	// the delimiter must be a whole line: "xEOF" does not close
+	absent('cat <<EOF\nrm -rf x xEOF\nEOF');
+});
+
+test("unterminated heredoc defers", () => {
+	defer("git commit -m msg <<EOF\nrm -rf /");
+	defer("cat <<'EOF'\nrm -rf x");
+});
+
+test("heredoc inside a double-quoted command substitution is data", () => {
+	// the exact shape that blocked a git commit in practice
+	absent('git add file && git commit -m "$(cat <<\'EOF\'\nmessage mentioning rm -rf /\nhere\nEOF\n)" && git push');
+	absent('git commit -m "$(cat <<\'EOF\'\ndeny("rm -rf /*")\nEOF\n)"');
+	assert.deepEqual(eligible('rm -rf dist <<\'EOF\'\nbody\nEOF'), { kind: "eligible", targets: ["dist"] });
+});
