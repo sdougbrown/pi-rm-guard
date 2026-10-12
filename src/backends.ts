@@ -162,7 +162,12 @@ export function createClassifierBackend(
 		name: `classifier:${options.provider}/${options.modelId}`,
 		defaultThreshold: 0.6,
 		async decide({ command, intent, targets }) {
-			const state = { description: DECISIONS_STATE, command, userRequest: intent };
+			const state = {
+				description: DECISIONS_STATE,
+				command,
+				userRequest: intent,
+				targets: targets && targets.length > 0 ? targets.join(", ") : "(none resolved statically)",
+			};
 			try {
 				let answers: Record<string, { probabilities?: Record<string, number>; probability?: number }>;
 				try {
