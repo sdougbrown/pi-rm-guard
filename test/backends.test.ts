@@ -20,7 +20,8 @@ test("decisions input states the resolved targets and the gate-verified scope", 
 	const withTargets = buildDecisionsInput("rm -rf dist tmp-x", "delete dist", ["dist", "/tmp/x"]);
 	assert.match(withTargets, /Deleting: dist, \/tmp\/x/);
 	assert.match(withTargets, /static safety gate has verified/);
-	assert.match(withTargets, /'ask the human', not deny/);
+	assert.match(withTargets, /safe for system integrity/);
+	assert.match(withTargets, /plausibly holds user or project data/);
 	const noTargets = buildDecisionsInput("rm -rf *", "(no recent user request in session)");
 	assert.match(noTargets, /Deleting: the command's targets/);
 });
