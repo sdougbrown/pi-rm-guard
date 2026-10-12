@@ -6,7 +6,8 @@
   the gate) and every match is judged like a literal path; the session entry
   records the expanded match list as `targets`.
 - Bounds that keep a glob judgeable: every globbed component needs at least one
-  literal character; expansion is capped at 64 matches; the literal prefix
+  alphanumeric, `_`, or `-` character (dot-only shapes like `.*` defer); expansion
+  is capped at 64 matches; the literal prefix
   (components before the first glob) is denied on its own for root, system
   trees, and the whole home directory — even when the glob matches nothing.
 - Symlink matches are resolved physically (per component) and caught by the

@@ -145,6 +145,23 @@ test("glob expansion cap: exactly 64 matches is eligible, 65 defers", () => {
 	defer(`rm -rf /tmp/rmguard-cap-${process.pid}/edge-*`);
 });
 
+test("mixed literal and glob targets in one rm are each judged", () => {
+	writeFileSync(path.join(proj, "cache-part-a"), "x");
+	// a denied literal target denies the whole command, even with an eligible glob
+	deny("rm -rf /etc cache-part-*");
+	// an unresolvable target defers the whole command
+	defer("rm -rf $CACHE_DIR cache-part-*");
+	// when all targets judge, the expansion applies alongside literals
+	writeFileSync(path.join(proj, "cache-part-b"), "x");
+	const both = eligible("rm -rf node_modules/.cache cache-part-*");
+	assert.deepEqual([...both.targets].sort(), [`node_modules/.cache`, `${proj}/cache-part-a`, `${proj}/cache-part-b`].sort());
+});
+
+test("a dot-only glob component defers (stricter than 'any literal character')", () => {
+	// the check requires an alphanumeric/_/- character, so ".*" is unbounded
+	defer(`rm -rf /tmp/rmguard-tmp-${process.pid}/.*`);
+});
+
 test("benign non-rm segments pass through with the judged rm", () => {
 	assert.equal(eligible("rm -rf dist; echo done").kind, "eligible");
 	assert.equal(eligible("echo hi && rm -rf dist").kind, "eligible");

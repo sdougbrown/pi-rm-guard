@@ -23,8 +23,8 @@ literal targets:
   against the real filesystem before the scope check, and every match is judged
   like a literal path (so a matching symlink pointing outside scope still
   defers/denies). Bounds: every globbed component must contain at least one
-  literal character (`rm -rf *`, `rm -rf dist/*` defer), and expansion past 64
-  matches defers. A glob anchored under a system path (`/etc/foo*`) denies even
+  alphanumeric, `_`, or `-` character (`rm -rf *`, `rm -rf dist/*`, and dot-only
+  shapes like `.*` defer), and expansion past 64 matches defers. A glob anchored under a system path (`/etc/foo*`) denies even
   when it matches nothing. Known limit: rm re-globs at execution, so a file
   created in the checked directory between the check and the rm run is deleted
   too — the pattern's directories are always literal, in-scope paths.

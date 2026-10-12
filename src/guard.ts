@@ -286,8 +286,9 @@ function globComponentToRegex(component: string): RegExp {
  * the scope check sees every path the shell would hand to rm — the glob never
  * reaches the shell unexpanded. Two bounds keep the set judgeable:
  *
- * - Every globbed component must contain at least one literal character, so
- *   `rm -rf *` and `rm -rf dist/*` (delete-everything shapes) still defer.
+ * - Every globbed component must contain at least one alphanumeric, `_`, or
+ *   `-` character, so `rm -rf *`, `rm -rf dist/*`, and dot-only shapes like
+ *   `.*` still defer.
  * - Expansion stops at GLOB_MATCH_CAP matches; beyond that a human decides.
  *
  * The literal prefix (components before the first glob) is denied on its own
@@ -325,8 +326,9 @@ function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } |
 		return { defer: `${pattern} matches outside the session and /tmp` };
 	}
 
-	// Every globbed component must contain at least one literal character, so
-	// `rm -rf *` and `rm -rf dist/*` (delete-everything shapes) still defer.
+	// Every globbed component must contain at least one alphanumeric, `_`, or
+	// `-` character, so `rm -rf *`, `rm -rf dist/*`, and dot-only shapes like
+	// `.*` still defer.
 	for (let i = firstGlob; i < components.length; i++) {
 		if (!/[a-zA-Z0-9_-]/.test(components[i].replace(/\*|\?/g, ""))) {
 			return { defer: `unbounded glob pattern: ${pattern}` };
