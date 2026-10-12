@@ -22,6 +22,7 @@ DECISION="$3"
 # Create the case dir exclusively: the stamp has 1-second resolution, so a
 # same-second rerun of a case must not reuse (and blend evidence with) the
 # previous run's directory. Retry with a fresh stamp on collision.
+mkdir -p "$EVIDENCE"
 CASE_DIR=""
 for _ in 1 2 3; do
 	STAMP="$(date +%Y%m%d-%H%M%S)"
