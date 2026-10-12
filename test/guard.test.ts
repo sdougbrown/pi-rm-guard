@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { analyzeCommand, resolveReal } from "../src/guard.ts";
+import { analyzeCommand, buildDecisionInput, resolveReal } from "../src/guard.ts";
 
 // Fixture: a project dir, a /tmp target, and a symlink inside the project
 // pointing outside (to $HOME) — the classic symlink escape.
@@ -166,4 +166,14 @@ test("cleanup", () => {
 	rmSync(proj, { recursive: true, force: true });
 	rmSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`), { recursive: true, force: true });
 	rmSync(path.join(process.env.HOME ?? "/tmp", `.rmguard-test-${process.pid}`), { recursive: true, force: true });
+});
+
+test("decision input states the gate-verified scope and the resolved targets", () => {
+	const input = buildDecisionInput("rm -rf build", ["build"], proj, ["clean up the build"]);
+	assert.match(input, /Deleting: build/);
+	assert.match(input, /static safety gate has verified/);
+	assert.match(input, /"ask the human", not deny/);
+	assert.match(input, /clean up the build/);
+	const noTargets = buildDecisionInput("rm -rf *", [], proj, []);
+	assert.match(noTargets, /Deleting: \(none resolved statically\)/);
 });

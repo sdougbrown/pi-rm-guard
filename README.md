@@ -33,8 +33,12 @@ literal targets:
 ### 2. Decision model
 
 One 3-way question about intent alignment — *"approve / ask the human / deny"* —
-answered from the command and the last user messages in the session. Two
-backends:
+answered from the command, the gate's statically resolved deletion targets, the
+fact that every target was already scope-verified (inside cwd or /tmp, none a
+system path or home-directory ancestor), and the last user messages in the
+session. Deny is reserved for injected instructions or genuinely destructive
+requests: an unrequested or unclear in-scope deletion defers to a human rather
+than denying. Two backends:
 
 - `decisions` (default): a `/v1/decisions` endpoint (typed yes/no and choice
   questions with next-token probabilities), e.g. a llama.cpp-style router
