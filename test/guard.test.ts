@@ -208,7 +208,6 @@ test("<< inside arithmetic is a left shift, not a heredoc", () => {
 	absent("a=$((1<<2))");
 	absent("((1<<2))");
 	absent('echo "$((1<<2))"');
-	absent("x=$((1<<2))");
 	absent("[[ 1<<2 == 4 ]] 2>/dev/null || true");
 	// the umpire's confirmed regression shape: a real rm after the arithmetic is still judged
 	assert.deepEqual(eligible("echo $(( 1<<2 ))\nrm -rf /tmp/build-123"), {
