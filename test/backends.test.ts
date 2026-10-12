@@ -104,7 +104,17 @@ test("jev backend maps choice answers to approve/deny/defer", async () => {
 	assert.equal(captured?.command, "rm -rf dist");
 	assert.equal(captured?.userRequest, "delete dist");
 	assert.equal(captured?.targets, "(none resolved statically)");
-	const withTargets = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, classify: async (st) => { captured = st; return { answers: { action: { probabilities: { approve: 0.9, ask: 0.05, deny: 0.05 } } }, stopReason: "stop" }; } });
+	// a fresh backend isolates the internal choice-vs-bool `mode` state, so
+	// this decide cannot be polluted by a bool-mode fallback from the first
+	// classification
+	const withTargets = createJevBackend(fakeRegistry(), {
+		modelId: "jev-latest",
+		apiKey: undefined,
+		classify: async (st) => {
+			captured = st;
+			return { answers: { action: { probabilities: { approve: 0.9, ask: 0.05, deny: 0.05 } } }, stopReason: "stop" };
+		},
+	});
 	await withTargets.decide({ command: "rm -rf dist", intent: "delete dist", targets: ["dist"] });
 	assert.equal(captured?.targets, "dist");
 	assert.equal(called, 1); // choice worked, no bool retry
