@@ -86,7 +86,7 @@ for (const f of files) {
 fs.writeFileSync(process.argv[2], out.length ? out.join("\n") + "\n" : "");
 if (out.length) console.log(out.join("\n"));
 ' "$CASE_DIR/sessions" "$CASE_DIR/entries.jsonl"
-DEC_CALLS=0; [ -f "$CASE_DIR/stub/decisions-requests.jsonl" ] && DEC_CALLS=$(wc -l < "$CASE_DIR/stub/decisions-requests.jsonl")
+DEC_CALLS=0; [ -f "$CASE_DIR/stub/decisions-requests.jsonl" ] && DEC_CALLS=$(wc -l < "$CASE_DIR/stub/decisions-requests.jsonl" | tr -d '[:space:]')
 echo "--- decisions calls: $DEC_CALLS ---"
 echo "evidence:  $CASE_DIR"
 
@@ -95,17 +95,17 @@ echo "evidence:  $CASE_DIR"
 # Entry tokens are simple field checks against any one rm-guard entry
 # (e.g. "gate=denied", "action=approve autoApproved=true"); "absent" requires
 # no rm-guard entry at all; "targets=[]" an empty, "targets=+" a non-empty list.
-# glob-* cases follow features/glob-targets.md (gate-side glob expansion).
+# glob-* cases follow features/glob-targets.md (gate-side glob expansion) —
+# those expectations live on the stacked glob-expansion branch; on this branch
+# every glob defers, so only glob-unbounded is asserted here.
 expectation_for() {
 	case "$1" in
 		approve)          echo "DELETED|action=approve autoApproved=true|1" ;;
 		eligible-literal) echo "DELETED|action=approve autoApproved=true|1" ;;
-		low-conf)         echo "SURVIVED|action=defer autoApproved=false|1" ;;
+		low-conf)         echo "SURVIVED|gate=low-confidence autoApproved=false|1" ;;
 		deny|deny-root)   echo "SURVIVED|gate=denied|0" ;;
 		defer|defer-glob|defer-var|glob-unbounded) echo "SURVIVED|gate=ineligible|0" ;;
 		absent)           echo "DELETED|absent|0" ;;
-		glob-approved)    echo "SURVIVED|action=approve autoApproved=true targets=[]|1" ;;
-		glob-real)        echo "DELETED|action=approve autoApproved=true targets=+|1" ;;
 		*)                echo "" ;;
 	esac
 }
