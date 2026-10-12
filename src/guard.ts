@@ -368,6 +368,13 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 		// Non-rm segment: an unquoted rm token means rm runs behind something we
 		// cannot verify (sudo, env prefix, xargs). A quoted "rm -rf" is stripped
 		// before this point and ignored. rm inside a substitution executes.
+		// Exception: `git rm --cached` only unstages — the files stay on disk,
+		// so the segment is inert for the gate. `git rm` without --cached does
+		// delete from disk and still defers.
+		const segTokens = remainder.trim().split(/\s+/).filter(Boolean);
+		if (segTokens[0] === "git" && segTokens[1] === "rm" && segTokens.some((t) => t === "--cached")) {
+			continue;
+		}
 		if (hasRmToken(remainder)) {
 			rmDeferred = true;
 			reason = "rm is not in leading position";

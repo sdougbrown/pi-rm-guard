@@ -19,6 +19,8 @@ literal targets:
   globs, quoted targets, command substitution, and redirections defer to a
   human. Exception: literal assignments earlier in the same command
   (`WT=/tmp/x; rm -rf $WT`) are substituted and checked like any literal path.
+- **`git rm --cached` is index-only** — it does not touch the disk, so segments
+  containing it are inert; `git rm` without `--cached` still defers.
 - **Scope** — every target must resolve (physically, per component) inside the
   session cwd or `/tmp`. Symlinks are followed during resolution, so a link
   inside the project pointing at `$HOME/.ssh` defers, and `link/../etc` cannot

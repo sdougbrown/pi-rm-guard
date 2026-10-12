@@ -168,3 +168,14 @@ test("cleanup", () => {
 	rmSync(path.join(process.env.HOME ?? "/tmp", `.rmguard-test-${process.pid}`), { recursive: true, force: true });
 });
 
+test("git rm --cached only unstages: index-only, so the segment is inert", () => {
+	absent("git rm --cached mcp.pid mcp2.pid -q");
+	absent("git rm --cached -r build/ -q");
+	absent('git rm --cached mcp.pid -q && rm -f mcp.pid mcp2.pid && git commit --amend --no-edit -q && git push -f 2>&1 | tail -1');
+});
+
+test("git rm without --cached deletes from disk and still defers", () => {
+	defer("git rm mcp.pid");
+	defer("git rm -rf dist");
+	defer("git rm -r build/");
+});

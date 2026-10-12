@@ -12,3 +12,5 @@ source — update a file in the same change that alters the behavior.
 - `auto-deny.md` — unacceptable targets are blocked with no dialog and no
   model call
 - `non-recursive-rm.md` — plain rm passes through untouched (pi's normal flow)
+- `git-rm-cached.md` — `git rm --cached` is index-only, so segments containing
+  it pass through with no gate entry; `git rm` without `--cached` still defers
