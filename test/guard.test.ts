@@ -111,11 +111,19 @@ test("glob in the cwd expands relative to the session cwd", () => {
 	assert.deepEqual([...verdict.targets].sort(), [`${proj}/cache-part-a`, `${proj}/cache-part-b`].sort());
 });
 
-test("glob expanding beyond the cap defers", () => {
+test("glob expansion cap: exactly 64 matches is eligible, 65 defers", () => {
 	const dir = path.join("/tmp", `rmguard-cap-${process.pid}`);
 	mkdirSync(dir, { recursive: true });
+	// unrelated over-cap fixture: still defers
 	for (let i = 0; i < 70; i++) writeFileSync(path.join(dir, `many-${String(i).padStart(3, "0")}`), "x");
 	defer(`rm -rf /tmp/rmguard-cap-${process.pid}/many-*`);
+	// boundary: GLOB_MATCH_CAP (64) matches stay judgeable, one more defers
+	for (let i = 0; i < 64; i++) writeFileSync(path.join(dir, `edge-${String(i).padStart(3, "0")}`), "x");
+	const at = eligible(`rm -rf /tmp/rmguard-cap-${process.pid}/edge-*`);
+	assert.equal(at.kind, "eligible");
+	assert.deepEqual([...at.targets].sort(), Array.from({ length: 64 }, (_, i) => `/tmp/rmguard-cap-${process.pid}/edge-${String(i).padStart(3, "0")}`).sort());
+	writeFileSync(path.join(dir, "edge-064"), "x");
+	defer(`rm -rf /tmp/rmguard-cap-${process.pid}/edge-*`);
 });
 
 test("benign non-rm segments pass through with the judged rm", () => {
