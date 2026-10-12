@@ -44,23 +44,41 @@ test("recursive rm with literal targets under cwd is eligible", () => {
 });
 
 test("bounded globs expand in the gate and are eligible with expanded targets", () => {
-	writeFileSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "avenor-verify.123"), "x");
-	writeFileSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "avenor-verify.abc"), "x");
-	mkdirSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "avenor-verify.dir"));
+	const tmpDir = path.join(tmpdir(), `rmguard-tmp-${process.pid}`);
+	writeFileSync(path.join(tmpDir, "avenor-verify.123"), "x");
+	writeFileSync(path.join(tmpDir, "avenor-verify.abc"), "x");
+	mkdirSync(path.join(tmpDir, "avenor-verify.dir"));
 	const verdict = eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/avenor-verify.*`);
-	assert.deepEqual(verdict, {
-		kind: "eligible",
-		targets: [
-			`/tmp/rmguard-tmp-${process.pid}/avenor-verify.123`,
-			`/tmp/rmguard-tmp-${process.pid}/avenor-verify.abc`,
-			`/tmp/rmguard-tmp-${process.pid}/avenor-verify.dir`,
-		],
-	});
+	// readdirSync order is filesystem-dependent; compare as sets
+	assert.deepEqual([...verdict.targets].sort(), [
+		`/tmp/rmguard-tmp-${process.pid}/avenor-verify.123`,
+		`/tmp/rmguard-tmp-${process.pid}/avenor-verify.abc`,
+		`/tmp/rmguard-tmp-${process.pid}/avenor-verify.dir`,
+	].sort());
 	// question-mark glob, single component
-	writeFileSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "leaf1.log"), "x");
+	writeFileSync(path.join(tmpDir, "leaf1.log"), "x");
 	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/leaf?.log`), {
 		kind: "eligible",
 		targets: [`/tmp/rmguard-tmp-${process.pid}/leaf1.log`],
+	});
+});
+
+test("dot-anchored glob matches dotfiles; a non-dot pattern skips them (bash semantics)", () => {
+	const tmpDir = path.join(tmpdir(), `rmguard-tmp-${process.pid}`);
+	writeFileSync(path.join(tmpDir, ".cache-junk"), "x");
+	writeFileSync(path.join(tmpDir, "cache-junk"), "x");
+	// dot-anchored pattern: the dotfile is part of the judged delete set
+	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/.cache-*`), {
+		kind: "eligible",
+		targets: [`/tmp/rmguard-tmp-${process.pid}/.cache-junk`],
+	});
+	// non-dot pattern: the dotfile must NOT appear in the judged targets
+	// (bash would not pass it to rm either); the plain file is judged. A
+	// leading-* pattern regex-matches the dotfile, so this case only passes
+	// when the dotfile skip actually runs.
+	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/*cache*`), {
+		kind: "eligible",
+		targets: [`/tmp/rmguard-tmp-${process.pid}/cache-junk`],
 	});
 });
 
@@ -72,10 +90,13 @@ test("glob with no matches is eligible (rm will no-op with an error)", () => {
 test("glob under a system root denies even with no matches", () => {
 	deny("rm -rf /etc/foo-bar-verify*");
 	deny("rm -rf /etc/*");
+	deny("rm -rf /*");
 });
 
-test("glob matching a symlink that escapes scope defers via the per-match scope check", () => {
-	symlinkSync("/etc", path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "escape-link"));
+test("glob matching a symlink that escapes scope denies via the per-match scope check", () => {
+	const link = path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "escape-link");
+	rmSync(link, { force: true }); // tolerate a crashed prior run at the same pid
+	symlinkSync("/etc", link);
 	assert.equal(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/escape-link`).kind, "deny");
 	// a glob whose expansion includes the escaping link is judged per match:
 	// the in-scope matches stay eligible only if the escaping match also stays
@@ -86,10 +107,8 @@ test("glob matching a symlink that escapes scope defers via the per-match scope 
 test("glob in the cwd expands relative to the session cwd", () => {
 	writeFileSync(path.join(proj, "cache-part-a"), "x");
 	writeFileSync(path.join(proj, "cache-part-b"), "x");
-	assert.deepEqual(eligible("rm -rf cache-part-*"), {
-		kind: "eligible",
-		targets: [`${proj}/cache-part-a`, `${proj}/cache-part-b`],
-	});
+	const verdict = eligible("rm -rf cache-part-*");
+	assert.deepEqual([...verdict.targets].sort(), [`${proj}/cache-part-a`, `${proj}/cache-part-b`].sort());
 });
 
 test("glob expanding beyond the cap defers", () => {
@@ -227,5 +246,6 @@ test("deleting /tmp itself or an ancestor denies", () => {
 test("cleanup", () => {
 	rmSync(proj, { recursive: true, force: true });
 	rmSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`), { recursive: true, force: true });
+	rmSync(path.join(tmpdir(), `rmguard-cap-${process.pid}`), { recursive: true, force: true });
 	rmSync(path.join(process.env.HOME ?? "/tmp", `.rmguard-test-${process.pid}`), { recursive: true, force: true });
 });
