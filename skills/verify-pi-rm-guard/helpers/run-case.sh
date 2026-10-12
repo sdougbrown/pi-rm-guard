@@ -31,6 +31,10 @@ for _ in $(seq 1 50); do
 	[ -f "$CASE_DIR/stub/ports.json" ] && break
 	sleep 0.1
 done
+if [ ! -f "$CASE_DIR/stub/ports.json" ]; then
+	echo "FAIL: stub engines failed to start — check $CASE_DIR/stub/stdout.json"
+	exit 1
+fi
 DEC_PORT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).decPort)' "$CASE_DIR/stub/ports.json")"
 CHAT_PORT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).chatPort)' "$CASE_DIR/stub/ports.json")"
 
