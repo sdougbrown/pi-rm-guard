@@ -254,11 +254,11 @@ function parseHeredocDelim(line: string, i: number): { text: string; stripTabs: 
  * because heredocs are legal inside case bodies, and a << in a case pattern
  * is pathological.
  */
-export function stripHeredocBodies(command: string): { command: string; unterminated: boolean } {
+function stripHeredocBodies(command: string): { command: string; unterminated: boolean } {
 	const lines = command.split("\n");
 	const out: string[] = [];
 	const pending: { text: string; stripTabs: boolean }[] = [];
-	const contexts: { type: "arith" | "test" | "subst"; depth: number }[] = [];
+	const contexts: { type: "arith" | "test" | "subst" | "case"; depth: number }[] = [];
 	for (const line of lines) {
 		if (pending.length > 0) {
 			// this line is heredoc body: it is data, except when it exactly closes
@@ -273,6 +273,14 @@ export function stripHeredocBodies(command: string): { command: string; untermin
 		for (let i = 0; i < line.length; i++) {
 			const ch = line[i];
 			const top = contexts[contexts.length - 1];
+			// for a safety gate, a << inside a case body must not silently open a
+			// heredoc (a case pattern like *<<2* is shell text, and a phantom body
+			// would swallow real commands) — it is copied literally instead, which
+			// makes a genuine heredoc-in-case-body defer (safe direction)
+			if (top && top.type === "case" && ch === "<" && line[i + 1] === "<") {
+				result += ch;
+				continue;
+			}
 			// bash: inside "$( ... )" the outer double quote does not close until
 			// after the matching ")", and heredocs nested there are real
 			const inDqSubst = quote === '"' && top !== undefined && top.type === "subst";
@@ -314,6 +322,20 @@ export function stripHeredocBodies(command: string): { command: string; untermin
 					continue;
 				}
 				result += ch;
+				continue;
+			}
+			// word detection for case/esac: standalone words only
+			const prevBoundary = i === 0 || !/[A-Za-z0-9_]/.test(line[i - 1]);
+			if (ch === "c" && prevBoundary && line.startsWith("case", i) && !/[A-Za-z0-9_]/.test(line[i + 4] ?? "")) {
+				contexts.push({ type: "case", depth: 1 });
+				result += "case";
+				i += 3;
+				continue;
+			}
+			if (ch === "e" && prevBoundary && line.startsWith("esac", i) && !/[A-Za-z0-9_]/.test(line[i + 4] ?? "")) {
+				if (top && top.type === "case") contexts.pop();
+				result += "esac";
+				i += 3;
 				continue;
 			}
 			if (quote === '"' && ch === "$" && line[i + 1] === "(") {

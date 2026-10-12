@@ -209,6 +209,7 @@ test("<< inside arithmetic is a left shift, not a heredoc", () => {
 	absent("((1<<2))");
 	absent('echo "$((1<<2))"');
 	absent("[[ 1<<2 == 4 ]] 2>/dev/null || true");
+	absent("a=$[1<<2]");
 	// the umpire's confirmed regression shape: a real rm after the arithmetic is still judged
 	assert.deepEqual(eligible("echo $(( 1<<2 ))\nrm -rf /tmp/build-123"), {
 		kind: "eligible",
@@ -225,4 +226,23 @@ test("heredoc delimiter may be space-separated from <<", () => {
 test("delimiter dequoting: quotes and backslashes in the delimiter are not part of the terminator", () => {
 	absent('cat <<E"OF"\nrm -rf x\nEOF');
 	absent("cat <<E\\OF\nrm -rf x\nEOF");
+});
+
+test("case-context << is copied literally, never a phantom heredoc", () => {
+	// the umpire's confirmed silent-bypass shape: gate must NOT return absent
+	defer("case $x in\n*<<2*) true ;;\nesac\nrm -rf ~/.ssh");
+		// a genuine heredoc inside a case body is not recognized either: its body
+	// lines are judged as standalone commands (deny here) - never absent
+	deny("case $x in\na) cat <<'EOF'\nrm -rf /\nEOF\n;;\nesac");
+});
+
+test("pending queue does not leak past the heredoc consumer", () => {
+	assert.deepEqual(eligible('git commit -m "$(cat <<\'EOF\'\nEOF\n)" && rm -rf dist'), {
+		kind: "eligible",
+		targets: ["dist"],
+	});
+});
+
+test("same-line multiple heredocs consume their bodies in order (FIFO)", () => {
+	absent("cat <<A <<B\nfirstA\nA\nfirstB\nB");
 });

@@ -37,7 +37,8 @@ commit-message heredoc) as the second argument — newlines and all, JSON-encode
 by the driver. `heredoc-mention` proves absence (no rm-guard entry, zero
 decisions calls, the command's own side effects only); `heredoc-delete` proves
 a real rm beside a heredoc still flows through the decision model
-(autoApproved true, marker deleted).
+(autoApproved true, marker deleted). The `arith-shift` case proves a real rm
+AFTER arithmetic `<<` in the same command is still judged.
 
 ## Gotchas
 
