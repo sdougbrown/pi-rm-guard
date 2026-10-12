@@ -301,7 +301,7 @@ function globComponentToRegex(component: string): RegExp {
  * directories are literal and scope-checked, so the blast radius stays inside
  * cwd//tmp; this is the same trust level the gate already extends to /tmp.
  */
-export function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } | { defer: string } | { deny: string } {
+function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } | { defer: string } | { deny: string } {
 	const absolute = pattern.startsWith("/");
 	const components = pattern.split("/").filter((c) => c.length > 0 && c !== ".");
 	let firstGlob = components.findIndex((c) => hasGlobChars(c));

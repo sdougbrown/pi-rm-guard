@@ -104,6 +104,25 @@ test("glob matching a symlink that escapes scope denies via the per-match scope 
 	deny(`rm -rf /tmp/rmguard-tmp-${process.pid}/escape*`);
 });
 
+test("glob with a .. component after the glob defers", () => {
+	defer(`rm -rf /tmp/rmguard-tmp-${process.pid}/escape*/..`);
+	defer(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-*/..`);
+});
+
+test("glob anchored at the home directory denies", () => {
+	deny("rm -rf ~/*");
+});
+
+test("relative glob with a literal subdirectory prefix expands", () => {
+	writeFileSync(path.join(proj, "sub", "build-stamp-a"), "x");
+	writeFileSync(path.join(proj, "sub", "build-stamp-b"), "x");
+	const verdict = eligible("rm -rf sub/build-stamp-*");
+	assert.deepEqual([...verdict.targets].sort(), [
+		`${proj}/sub/build-stamp-a`,
+		`${proj}/sub/build-stamp-b`,
+	].sort());
+});
+
 test("glob in the cwd expands relative to the session cwd", () => {
 	writeFileSync(path.join(proj, "cache-part-a"), "x");
 	writeFileSync(path.join(proj, "cache-part-b"), "x");
