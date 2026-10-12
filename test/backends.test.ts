@@ -9,7 +9,7 @@ const choiceResponse = (approve: number, ask: number, deny: number) =>
 				action: {
 					// /v1/decisions answers are keyed by positional letters
 					probabilities: { A: approve, B: ask, C: deny },
-					choice: approve > 0.5 ? "approve" : ask > 0.5 ? "ask" : "deny",
+					choice: approve >= ask && approve >= deny ? "approve" : deny >= ask ? "deny" : "ask",
 				},
 			},
 		}),
@@ -37,7 +37,7 @@ test("decisions backend maps the 3-way choice to approve/deny/defer", async () =
 		},
 	});
 	const result = await backend.decide({ command: "rm -rf dist", intent: "clean up", targets: ["dist"] });
-	assert.deepEqual(result, { action: "approve", probability: 0.99 });
+	assert.deepEqual(result, { action: "approve", probability: 0.99, label: "approve" });
 	const body = JSON.parse(String(captured?.body));
 	assert.equal(body.model, "test-model");
 	assert.equal(body.questions[0].type, "choice");
@@ -47,14 +47,14 @@ test("decisions backend maps the 3-way choice to approve/deny/defer", async () =
 	assert.match(body.input, /clean up/);
 
 	const deny = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.001, 0.001, 0.999) }).decide({ command: "rm -rf /", intent: "i" });
-	assert.deepEqual(deny, { action: "deny", probability: 0.999 });
+	assert.deepEqual(deny, { action: "deny", probability: 0.999, label: "deny" });
 
 	const defer = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.5, 0.49, 0.01) }).decide({ command: "rm -rf x", intent: "i" });
-	assert.deepEqual(defer, { action: "defer", probability: 0.5 });
+	assert.deepEqual(defer, { action: "defer", probability: 0.5, label: "approve" });
 
 	// Deny needs near-certainty; 0.9 is not enough and defers instead.
 	const softDeny = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.05, 0.05, 0.9) }).decide({ command: "rm -rf x", intent: "i" });
-	assert.deepEqual(softDeny, { action: "defer", probability: 0.9 });
+	assert.deepEqual(softDeny, { action: "defer", probability: 0.9, label: "deny" });
 });
 
 test("decisions backend maps HTTP failures and bad bodies to errors", async () => {
@@ -99,7 +99,7 @@ test("jev backend maps choice answers to approve/deny/defer", async () => {
 	};
 	const backend = createJevBackend(fakeRegistry(), { modelId: "jev-latest", apiKey: undefined, classify });
 	const result = await backend.decide({ command: "rm -rf dist", intent: "delete dist" });
-	assert.deepEqual(result, { action: "approve", probability: 0.87 });
+	assert.deepEqual(result, { action: "approve", probability: 0.87, label: "approve" });
 	assert.equal(captured?.command, "rm -rf dist");
 	assert.equal(captured?.userRequest, "delete dist");
 	assert.equal(captured?.targets, "(none resolved statically)");
@@ -109,10 +109,10 @@ test("jev backend maps choice answers to approve/deny/defer", async () => {
 	assert.equal(called, 1); // choice worked, no bool retry
 
 	const deny = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, classify: async () => ({ answers: { action: { probabilities: { approve: 0.001, ask: 0.001, deny: 0.999 } } }, stopReason: "stop" }) });
-	assert.deepEqual(await deny.decide({ command: "rm -rf /", intent: "i" }), { action: "deny", probability: 0.999 });
+	assert.deepEqual(await deny.decide({ command: "rm -rf /", intent: "i" }), { action: "deny", probability: 0.999, label: "deny" });
 
 	const softDeny = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, classify: async () => ({ answers: { action: { probabilities: { approve: 0.05, ask: 0.05, deny: 0.9 } } }, stopReason: "stop" }) });
-	assert.deepEqual(await softDeny.decide({ command: "rm -rf x", intent: "i" }), { action: "defer", probability: 0.9 });
+	assert.deepEqual(await softDeny.decide({ command: "rm -rf x", intent: "i" }), { action: "defer", probability: 0.9, label: "deny" });
 });
 
 test("jev backend falls back to bool when choice is rejected", async () => {
@@ -124,7 +124,7 @@ test("jev backend falls back to bool when choice is rejected", async () => {
 	};
 	const backend = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, classify });
 	const result = await backend.decide({ command: "rm -rf dist", intent: "i" });
-	assert.deepEqual(result, { action: "approve", probability: 0.7 });
+	assert.deepEqual(result, { action: "approve", probability: 0.7, label: "approve" });
 	assert.equal(questionsSeen.length, 2);
 	assert.ok("action" in questionsSeen[0]);
 	assert.ok("safe" in questionsSeen[1]);
@@ -136,7 +136,7 @@ test("jev backend falls back to bool when choice is rejected", async () => {
 
 test("jev backend defers on low probability and surfaces failures as errors", async () => {
 	const backend = createJevBackend(fakeRegistry(), { modelId: "jev-latest", apiKey: undefined, classify: async () => ({ answers: { action: { probabilities: { approve: 0.1, ask: 0.85, deny: 0.05 } } }, stopReason: "stop" }) });
-	assert.deepEqual(await backend.decide({ command: "rm -rf dist", intent: "i" }), { action: "defer", probability: 0.85 });
+	assert.deepEqual(await backend.decide({ command: "rm -rf dist", intent: "i" }), { action: "defer", probability: 0.85, label: "ask" });
 
 	const failing = createJevBackend(fakeRegistry(), { modelId: "jev-latest", apiKey: undefined, classify: async () => { throw new Error("rate limited"); } });
 	assert.deepEqual(await failing.decide({ command: "rm -rf dist", intent: "i" }), { error: "rate limited" });

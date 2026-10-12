@@ -159,7 +159,7 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 			return { block: true, reason: `rm-guard: ${getBackend(ctx).name} denied (${decision.probability.toFixed(2)}): ${command}` };
 		}
 
-		return requireHuman(ctx, command, `${getBackend(ctx).name} confidence ${decision.probability.toFixed(2)}`, "low-confidence", [intent]);
+		return requireHuman(ctx, command, `model chose ${decision.label ?? "defer"} (p=${decision.probability.toFixed(2)}) — deferring to human`, "low-confidence", [intent]);
 	});
 
 	function requireHuman(

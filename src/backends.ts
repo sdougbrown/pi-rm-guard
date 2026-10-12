@@ -18,6 +18,8 @@ export interface DecisionOutcome {
 	action: DecisionAction;
 	/** Probability of the deciding label (p(yes) for bool, the chosen label for choice). */
 	probability: number;
+	/** Which label the model actually chose (approve/ask/deny); absent for errors and bool fallbacks that cannot deny. */
+	label?: "approve" | "ask" | "deny";
 }
 
 export interface DecisionBackend {
@@ -86,10 +88,11 @@ export function createDecisionsBackend(options: DecisionsBackendOptions): Decisi
 				if (!answer?.probabilities || !answer.choice) return { error: "decision API missing probabilities" };
 				const approve = answer.probabilities.A ?? 0;
 				const deny = answer.probabilities.C ?? 0;
-				if (approve >= (options.approveThreshold ?? 0.85)) return { action: "approve", probability: approve };
-				if (deny >= DENY_THRESHOLD) return { action: "deny", probability: deny };
+				const label = answer.choice === "approve" ? "approve" : answer.choice === "deny" ? "deny" : "ask";
+				if (approve >= (options.approveThreshold ?? 0.85)) return { action: "approve", probability: approve, label: "approve" };
+				if (deny >= DENY_THRESHOLD) return { action: "deny", probability: deny, label: "deny" };
 				const ask = answer.probabilities.B ?? 0;
-				return { action: "defer", probability: Math.max(approve, ask, deny) };
+				return { action: "defer", probability: Math.max(approve, ask, deny), label };
 			} catch (err) {
 				return { error: err instanceof Error ? err.message : String(err) };
 			}
@@ -182,14 +185,16 @@ export function createClassifierBackend(
 					const a = answers.action;
 					if (!a?.probabilities) return { error: "classifier missing choice probabilities" };
 					const approve = a.probabilities.approve ?? 0;
+					const ask = a.probabilities.ask ?? 0;
 					const deny = a.probabilities.deny ?? 0;
-					if (approve >= 0.6) return { action: "approve", probability: approve };
-					if (deny >= DENY_THRESHOLD) return { action: "deny", probability: deny };
-					return { action: "defer", probability: Math.max(approve, a.probabilities.ask ?? 0, deny) };
+					const label = approve >= ask && approve >= deny ? "approve" : deny >= ask ? "deny" : "ask";
+					if (approve >= 0.6) return { action: "approve", probability: approve, label: "approve" };
+					if (deny >= DENY_THRESHOLD) return { action: "deny", probability: deny, label: "deny" };
+					return { action: "defer", probability: Math.max(approve, ask, deny), label };
 				}
 				const probability = answers.safe?.probability ?? 0;
 				// Bool classifiers have no deny label: a "no" defers to the human.
-				return probability >= 0.6 ? { action: "approve", probability } : { action: "defer", probability };
+				return probability >= 0.6 ? { action: "approve", probability, label: "approve" } : { action: "defer", probability, label: "ask" };
 			} catch (err) {
 				return { error: err instanceof Error ? err.message : String(err) };
 			}
