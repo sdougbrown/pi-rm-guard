@@ -338,10 +338,9 @@ export function expandGlobTarget(pattern: string, cwd: string): { matches: strin
 	let current: string[] = [prefixReal === "/" ? "/" : prefixReal];
 	for (let i = firstGlob; i < components.length; i++) {
 		const component = components[i];
-		if (component === "..") {
-			current = current.map((dir) => path.dirname(dir));
-			continue;
-		}
+		// A ".." component after a glob is rejected above by the unbounded check
+		// (it has no literal character), so only literal/glob components remain:
+		// matches are always inside the resolved prefix directory tree.
 		if (!hasGlobChars(component)) {
 			const next: string[] = [];
 			for (const dir of current) {

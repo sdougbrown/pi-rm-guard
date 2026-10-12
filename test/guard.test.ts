@@ -10,7 +10,7 @@ import { analyzeCommand, resolveReal } from "../src/guard.ts";
 const proj = path.join(tmpdir(), `rmguard-test-${process.pid}`);
 mkdirSync(path.join(proj, "node_modules/.cache"), { recursive: true });
 mkdirSync(path.join(proj, "sub"), { recursive: true });
-mkdirSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}/build-123`), { recursive: true });
+mkdirSync(path.join("/tmp", `rmguard-tmp-${process.pid}/build-123`), { recursive: true });
 const homeOutside = path.join(process.env.HOME ?? "/tmp", `.rmguard-test-${process.pid}/.ssh`);
 mkdirSync(homeOutside, { recursive: true });
 writeFileSync(path.join(homeOutside, "id_ed25519"), "key");
@@ -44,7 +44,7 @@ test("recursive rm with literal targets under cwd is eligible", () => {
 });
 
 test("bounded globs expand in the gate and are eligible with expanded targets", () => {
-	const tmpDir = path.join(tmpdir(), `rmguard-tmp-${process.pid}`);
+	const tmpDir = path.join("/tmp", `rmguard-tmp-${process.pid}`);
 	writeFileSync(path.join(tmpDir, "avenor-verify.123"), "x");
 	writeFileSync(path.join(tmpDir, "avenor-verify.abc"), "x");
 	mkdirSync(path.join(tmpDir, "avenor-verify.dir"));
@@ -64,7 +64,7 @@ test("bounded globs expand in the gate and are eligible with expanded targets", 
 });
 
 test("dot-anchored glob matches dotfiles; a non-dot pattern skips them (bash semantics)", () => {
-	const tmpDir = path.join(tmpdir(), `rmguard-tmp-${process.pid}`);
+	const tmpDir = path.join("/tmp", `rmguard-tmp-${process.pid}`);
 	writeFileSync(path.join(tmpDir, ".cache-junk"), "x");
 	writeFileSync(path.join(tmpDir, "cache-junk"), "x");
 	// dot-anchored pattern: the dotfile is part of the judged delete set
@@ -94,7 +94,7 @@ test("glob under a system root denies even with no matches", () => {
 });
 
 test("glob matching a symlink that escapes scope denies via the per-match scope check", () => {
-	const link = path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "escape-link");
+	const link = path.join("/tmp", `rmguard-tmp-${process.pid}`, "escape-link");
 	rmSync(link, { force: true }); // tolerate a crashed prior run at the same pid
 	symlinkSync("/etc", link);
 	assert.equal(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/escape-link`).kind, "deny");
@@ -112,7 +112,7 @@ test("glob in the cwd expands relative to the session cwd", () => {
 });
 
 test("glob expanding beyond the cap defers", () => {
-	const dir = path.join(tmpdir(), `rmguard-cap-${process.pid}`);
+	const dir = path.join("/tmp", `rmguard-cap-${process.pid}`);
 	mkdirSync(dir, { recursive: true });
 	for (let i = 0; i < 70; i++) writeFileSync(path.join(dir, `many-${String(i).padStart(3, "0")}`), "x");
 	defer(`rm -rf /tmp/rmguard-cap-${process.pid}/many-*`);
@@ -245,7 +245,7 @@ test("deleting /tmp itself or an ancestor denies", () => {
 
 test("cleanup", () => {
 	rmSync(proj, { recursive: true, force: true });
-	rmSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`), { recursive: true, force: true });
-	rmSync(path.join(tmpdir(), `rmguard-cap-${process.pid}`), { recursive: true, force: true });
+	rmSync(path.join("/tmp", `rmguard-tmp-${process.pid}`), { recursive: true, force: true });
+	rmSync(path.join("/tmp", `rmguard-cap-${process.pid}`), { recursive: true, force: true });
 	rmSync(path.join(process.env.HOME ?? "/tmp", `.rmguard-test-${process.pid}`), { recursive: true, force: true });
 });
