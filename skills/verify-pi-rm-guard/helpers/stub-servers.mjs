@@ -75,9 +75,30 @@ const decisions = http.createServer((req, res) => {
 	req.on("data", (c) => (body += c));
 	req.on("end", () => {
 		appendFileSync(`${stateDir}/decisions-requests.jsonl`, body + "\n");
-		const d = readJSON(`${stateDir}/decision.json`, { action: "A", probabilities: { A: 0.95, B: 0.03, C: 0.02 } });
+		const DECISION_FILE = `${stateDir}/decision.json`;
+		let decision;
+		try {
+			decision = JSON.parse(readFileSync(DECISION_FILE, "utf8"));
+		} catch (err) {
+			if (err.code === "ENOENT") {
+				// Absent file: fall back to the default verdict (approve), as before.
+				decision = { action: "A", probabilities: { A: 0.95, B: 0.03, C: 0.02 } };
+			} else {
+				// Present but unparseable: fail closed — 500 makes the guard record a
+				// model error and defer. A typo'd verdict must not silently approve.
+				const msg = `stub-servers: ${DECISION_FILE} is present but unparseable (${err.message}) — responding 500 so the guard defers`;
+				console.error(msg);
+				try {
+					writeFileSync(`${stateDir}/decision-error.txt`, `${msg}\n${err.stack ?? ""}\n`);
+				} catch {}
+				res.statusCode = 500;
+				res.setHeader("content-type", "application/json");
+				res.end(JSON.stringify({ error: "decision.json unparseable" }));
+				return;
+			}
+		}
 		res.setHeader("content-type", "application/json");
-		res.end(JSON.stringify({ answers: { action: { choice: d.action, probabilities: d.probabilities } } }));
+		res.end(JSON.stringify({ answers: { action: { choice: decision.action, probabilities: decision.probabilities } } }));
 	});
 });
 
