@@ -43,6 +43,62 @@ test("recursive rm with literal targets under cwd is eligible", () => {
 	assert.equal(eligible("rm -rf -- dist").kind, "eligible");
 });
 
+test("bounded globs expand in the gate and are eligible with expanded targets", () => {
+	writeFileSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "avenor-verify.123"), "x");
+	writeFileSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "avenor-verify.abc"), "x");
+	mkdirSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "avenor-verify.dir"));
+	const verdict = eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/avenor-verify.*`);
+	assert.deepEqual(verdict, {
+		kind: "eligible",
+		targets: [
+			`/tmp/rmguard-tmp-${process.pid}/avenor-verify.123`,
+			`/tmp/rmguard-tmp-${process.pid}/avenor-verify.abc`,
+			`/tmp/rmguard-tmp-${process.pid}/avenor-verify.dir`,
+		],
+	});
+	// question-mark glob, single component
+	writeFileSync(path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "leaf1.log"), "x");
+	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/leaf?.log`), {
+		kind: "eligible",
+		targets: [`/tmp/rmguard-tmp-${process.pid}/leaf1.log`],
+	});
+});
+
+test("glob with no matches is eligible (rm will no-op with an error)", () => {
+	const verdict = eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/no-such-thing-*.log`);
+	assert.deepEqual(verdict, { kind: "eligible", targets: [] });
+});
+
+test("glob under a system root denies even with no matches", () => {
+	deny("rm -rf /etc/foo-bar-verify*");
+	deny("rm -rf /etc/*");
+});
+
+test("glob matching a symlink that escapes scope defers via the per-match scope check", () => {
+	symlinkSync("/etc", path.join(tmpdir(), `rmguard-tmp-${process.pid}`, "escape-link"));
+	assert.equal(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/escape-link`).kind, "deny");
+	// a glob whose expansion includes the escaping link is judged per match:
+	// the in-scope matches stay eligible only if the escaping match also stays
+	// in scope — here it denies, which is the safe direction.
+	deny(`rm -rf /tmp/rmguard-tmp-${process.pid}/escape*`);
+});
+
+test("glob in the cwd expands relative to the session cwd", () => {
+	writeFileSync(path.join(proj, "cache-part-a"), "x");
+	writeFileSync(path.join(proj, "cache-part-b"), "x");
+	assert.deepEqual(eligible("rm -rf cache-part-*"), {
+		kind: "eligible",
+		targets: [`${proj}/cache-part-a`, `${proj}/cache-part-b`],
+	});
+});
+
+test("glob expanding beyond the cap defers", () => {
+	const dir = path.join(tmpdir(), `rmguard-cap-${process.pid}`);
+	mkdirSync(dir, { recursive: true });
+	for (let i = 0; i < 70; i++) writeFileSync(path.join(dir, `many-${String(i).padStart(3, "0")}`), "x");
+	defer(`rm -rf /tmp/rmguard-cap-${process.pid}/many-*`);
+});
+
 test("benign non-rm segments pass through with the judged rm", () => {
 	assert.equal(eligible("rm -rf dist; echo done").kind, "eligible");
 	assert.equal(eligible("echo hi && rm -rf dist").kind, "eligible");
@@ -52,14 +108,20 @@ test("recursive rm on a /tmp target is eligible", () => {
 	assert.equal(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-123`).kind, "eligible");
 });
 
-test("variable indirection, globs, quotes and substitution defer", () => {
+test("variable indirection, quotes and substitution defer", () => {
 	defer("rm -rf $CACHE_DIR");
 	defer("rm -rf ${BUILD_DIR}/dist");
 	defer("rm -rf $(dirname dist)/x");
 	defer("rm -rf `echo dist`");
+	defer('rm -rf "my dir"');
+	defer("rm -rf 'dist*'"); // quoted globs do not expand in bash either
+});
+
+test("delete-everything glob shapes defer", () => {
 	defer("rm -rf *");
 	defer("rm -rf dist/*");
-	defer('rm -rf "my dir"');
+	defer("rm -rf ?");
+	defer("rm -rf */tmp");
 });
 
 test("literal assignments from the same command are substituted", () => {
