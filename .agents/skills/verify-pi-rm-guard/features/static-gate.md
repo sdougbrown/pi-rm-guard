@@ -26,7 +26,7 @@ and the defer reason; in print/JSON/RPC mode the call is blocked (fail-closed).
 ## Driving it with run-case.sh
 
 ```sh
-H=skills/verify-pi-rm-guard/helpers
+H=.agents/skills/verify-pi-rm-guard/helpers
 D='{"action":"A","probabilities":{"A":0.95,"B":0.03,"C":0.02}}'
 $H/run-case.sh eligible-literal 'rm -rf /tmp/rmguard-verify-victim' "$D"
 $H/run-case.sh defer-glob       'rm -rf /tmp/rmguard-verify-vic*'   "$D"

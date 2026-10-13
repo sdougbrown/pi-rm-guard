@@ -15,12 +15,26 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 SKILL_DIR="$REPO/skills/verify-pi-rm-guard"
 EVIDENCE="$SKILL_DIR/evidence"
-STAMP="$(date +%Y%m%d-%H%M%S)"
 CASE="$1"
 COMMAND="$2"
 DECISION="$3"
-CASE_DIR="$EVIDENCE/$STAMP-$CASE"
 
+# Create the case dir exclusively: the stamp has 1-second resolution, so a
+# same-second rerun of a case must not reuse (and blend evidence with) the
+# previous run's directory. Retry with a fresh stamp on collision.
+mkdir -p "$EVIDENCE"
+CASE_DIR=""
+for _ in 1 2 3; do
+	STAMP="$(date +%Y%m%d-%H%M%S)"
+	CASE_DIR="$EVIDENCE/$STAMP-$CASE"
+	if mkdir "$CASE_DIR" 2>/dev/null; then break; fi
+	CASE_DIR=""
+	sleep 1.1
+done
+if [ -z "$CASE_DIR" ]; then
+	echo "FAIL: could not create a unique evidence dir for case $CASE"
+	exit 1
+fi
 mkdir -p "$CASE_DIR/workspace" "$CASE_DIR/agent" "$CASE_DIR/sessions" "$CASE_DIR/stub"
 
 # --- start stub engines (record PID; never kill by name) ---------------------
@@ -95,7 +109,8 @@ echo "evidence:  $CASE_DIR"
 # Entry tokens are simple field checks against any one rm-guard entry
 # (e.g. "gate=denied", "action=approve autoApproved=true"); "absent" requires
 # no rm-guard entry at all; "targets=[]" an empty, "targets=+" a non-empty list.
-# glob-* cases follow features/glob-targets.md (gate-side glob expansion).
+# glob-* cases follow features/glob-targets.md (gate-side glob expansion),
+# which exists on this branch.
 expectation_for() {
 	case "$1" in
 		approve)          echo "DELETED|action=approve autoApproved=true|1" ;;

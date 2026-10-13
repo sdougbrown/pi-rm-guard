@@ -15,7 +15,7 @@ containing "rm -rf". Nothing intercepts the call; the command just runs.
 ## Driving it with run-case.sh
 
 ```sh
-H=skills/verify-pi-rm-guard/helpers
+H=.agents/skills/verify-pi-rm-guard/helpers
 $H/run-case.sh absent 'rm /tmp/rmguard-verify-victim/marker' '{"action":"A","probabilities":{"A":0.95,"B":0.03,"C":0.02}}'
 ```
 
