@@ -419,6 +419,9 @@ test("unquoted heredoc bodies expand: substitutions are judged, never swallowed"
 	// bash expands $(..) and backticks in unquoted bodies; the rm must be judged
 	defer("cat <<EOF\n$(rm -rf /)\nEOF");
 	defer("cat <<EOF\n`rm -rf /`\nEOF");
+	// multi-line substitutions in unquoted bodies span body lines: each line
+	// of the open substitution is judged, not swallowed
+	defer("cat <<EOF\n$(\nrm -rf /\n)\nEOF");
 	// quoted bodies stay data
 	absent("cat <<'EOF'\n$(rm -rf x)\nEOF");
 	// plain body lines of an unquoted heredoc remain data
@@ -430,6 +433,12 @@ test("an unquoted # starts a comment: << after it never opens a heredoc", () => 
 	deny("echo hi # <<EOF\nrm -rf /\nEOF");
 	// # mid-word or after { is not a comment: the heredoc is real
 	absent("cat <<EOF\nrm -rf x\nEOF");
+	// # after a metacharacter boundary is a comment even when not preceded by
+	// whitespace (true |#, x=$(hi)#)
+	deny("true |# <<EOF\nrm -rf /\nEOF");
+	// x=$(hi)# glues the # onto the word in bash: the heredoc is real and the
+	// body line is data (bash does not run the rm)
+	absent("x=$(echo hi)# <<EOF\nrm -rf /\nEOF\necho done");
 	// a trailing comment after the operator is comment text; the rm in the
 	// body is data for cat, never executed (bash semantics)
 	absent("cat <<EOF # trailing comment\nrm -rf /\nEOF");
@@ -438,7 +447,7 @@ test("an unquoted # starts a comment: << after it never opens a heredoc", () => 
 test("<< inside a nested/quoted construct of a dq-substitution defers", () => {
 	// bash-literal << inside "$( [[ x<<EOF ]] )" is shell text there; a gate
 	// phantom heredoc would swallow the live rm on the next line
-	defer('echo "$( [[ x<<EOF ]] )"\nrm -rf /');
+	defer('echo "$( [[ x<<EOF ]] )"\nrm -rf /\nEOF');
 	// nested (( inside the substitution: same untracked-nesting defer
 	defer('echo "$( (( 1<<true )); : )"\nrm -rf /tmp/v\ntrue');
 });
@@ -462,7 +471,7 @@ test("a ] closes a subscript, not the arithmetic context", () => {
 test("a heredoc opened on a line ending in a continuation defers", () => {
 	// bash joins cat <<EOF \ + ; rm -rf / into one command line; a gate that
 	// treats the next physical line as body swallows the live command
-	defer("cat <<EOF \\\n; rm -rf /");
+	defer("cat <<EOF \\\n; rm -rf /\nEOF");
 	// an escaped backslash (even count) is not a continuation: the delimiter
 	// dequotes to a single backslash and the body closes normally
 	absent("cat <<EOF\\\\\nrm -rf x\nEOF\\");
@@ -481,6 +490,12 @@ test("dollar-quoted delimiters dequote: <<$'EOF' terminates at EOF", () => {
 	deny('cat <<$"EOF"\nEOF\necho X\nrm -rf /');
 	// escapes inside a double-quoted delimiter dequote too
 	deny('cat <<"E\\$OF"\nE$OF\necho X\nrm -rf /');
+	// ANSI-C escapes change the word: the gate cannot model them, so the body
+	// never closes here (defer) and the live rm is judged
+	defer("cat <<$'\\x45OF'\nEOF\nrm -rf /\n\\x45OF");
+	// the outer quote closes with the " right after the dq-substitution's )
+	// — a quoted "<<EOF y" argument after it must not open a heredoc
+	deny('echo "$(x)" "<<EOF y"\nrm -rf /\nEOF');
 });
 
 test("unterminated heredoc defers", () => {

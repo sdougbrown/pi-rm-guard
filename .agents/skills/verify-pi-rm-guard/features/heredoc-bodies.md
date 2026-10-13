@@ -9,10 +9,18 @@
   `git commit -m "$(cat <<'EOF'...)"` calls.
 - An UNQUOTED delimiter means bash expands the body: body lines containing
   `$(...)`, `${...}`, or backticks are passed through and judged (defer or
-  deny), never swallowed. Quoted bodies stay data.
+  deny), never swallowed — including lines inside a substitution that spans
+  several body lines. Quoted bodies stay data.
 - An unquoted `#` at word position starts a comment: operator detection stops
   there for the line, so `echo hi # <<EOF` cannot open a phantom heredoc that
-  swallows a live command on a body-position line.
+  swallows a live command on a body-position line. The word boundary is a
+  start-of-line or a `[ \t;&|]` character — a `#` glued after `)` (`x=$(hi)#`)
+  is part of the word in bash, and mid-word `#` never starts one.
+- A double-quoted command substitution's closing `)` does not close the outer
+  `"`; consuming the `"` that immediately follows does. A `#` at word position
+  inside the substitution is a comment too. A `<<` after untracked nesting
+  (quotes, `[[`, `((`, backtick, standalone `case`) inside the substitution
+  defers instead of opening a phantom heredoc.
 - Heredocs nested inside a double-quoted command substitution are recognized
   (bash does not close the outer `"` until after the substitution's matching `)`).
 - `<<` inside arithmetic (`$((...))`, `((...))`, `$[...]`) and test (`[[...]]`)
@@ -28,7 +36,9 @@
   line reading `EOF`. Dollar-quotes dequote too (`<<$'EOF'`, `<<$"EOF"` →
   `EOF`), as do escapes inside double-quoted delimiters (`<<"E\$OF"` →
   `E$OF`). An empty quoted delimiter (`<<''`) is real: its body ends at the
-  empty line. Whitespace between `<<` and the delimiter is skipped.
+  empty line. Whitespace between `<<` and the delimiter is skipped. ANSI-C
+  escapes inside `$'...'` change the word (`$'\x45OF'`); the gate cannot model
+  them, so such a delimiter never closes here and the command defers.
 - The unquoted delimiter word is a shell word: it runs until whitespace or a
   metacharacter, so delimiters may contain `-`, `.`, `$` etc. (`<<EOF-x`,
   `<<E.OF`). The `<<-` tab-strip flag applies only when the dash immediately
