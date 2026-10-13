@@ -19,7 +19,7 @@ symlinkSync(path.dirname(homeOutside), path.join(proj, "to-home")); // -> $HOME/
 symlinkSync("/", path.join(proj, "to-root"));
 symlinkSync(path.join(proj, "to-home"), path.join(proj, "to-home-2")); // symlink -> symlink
 
-const eligible = (cmd: string) => analyzeCommand(cmd, proj);
+const run = (cmd: string) => analyzeCommand(cmd, proj);
 const defer = (cmd: string, reason?: string) => {
 	const r = analyzeCommand(cmd, proj);
 	assert.equal(r.kind, "defer", `expected defer: ${cmd} -> ${JSON.stringify(r)}`);
@@ -37,13 +37,13 @@ const absent = (cmd: string) => {
 };
 
 test("recursive rm with literal targets under cwd is eligible", () => {
-	assert.deepEqual(eligible("rm -rf node_modules/.cache"), { kind: "eligible", targets: ["node_modules/.cache"] });
-	assert.equal(eligible("rm -rf build dist").kind, "eligible");
-	assert.equal(eligible("rm -fr dist").kind, "eligible");
-	assert.equal(eligible("rm -Rf ./dist").kind, "eligible");
-	assert.equal(eligible("/bin/rm -rf dist").kind, "eligible");
-	assert.equal(eligible("rm --one-file-system -rf dist").kind, "eligible");
-	assert.equal(eligible("rm -rf -- dist").kind, "eligible");
+	assert.deepEqual(run("rm -rf node_modules/.cache"), { kind: "eligible", targets: ["node_modules/.cache"] });
+	assert.equal(run("rm -rf build dist").kind, "eligible");
+	assert.equal(run("rm -fr dist").kind, "eligible");
+	assert.equal(run("rm -Rf ./dist").kind, "eligible");
+	assert.equal(run("/bin/rm -rf dist").kind, "eligible");
+	assert.equal(run("rm --one-file-system -rf dist").kind, "eligible");
+	assert.equal(run("rm -rf -- dist").kind, "eligible");
 });
 
 test("bounded globs expand in the gate and are eligible with expanded targets", () => {
@@ -51,18 +51,23 @@ test("bounded globs expand in the gate and are eligible with expanded targets", 
 	writeFileSync(path.join(tmpDir, "avenor-verify.123"), "x");
 	writeFileSync(path.join(tmpDir, "avenor-verify.abc"), "x");
 	mkdirSync(path.join(tmpDir, "avenor-verify.dir"));
-	const verdict = eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/avenor-verify.*`);
+	const verdict = run(`rm -rf /tmp/rmguard-tmp-${process.pid}/avenor-verify.*`);
 	// readdirSync order is filesystem-dependent; compare as sets
 	assert.deepEqual([...verdict.targets].sort(), [
 		`/tmp/rmguard-tmp-${process.pid}/avenor-verify.123`,
 		`/tmp/rmguard-tmp-${process.pid}/avenor-verify.abc`,
 		`/tmp/rmguard-tmp-${process.pid}/avenor-verify.dir`,
 	].sort());
-	// question-mark glob, single component
+	// question-mark glob, single component; a supplementary-plane name is one
+	// bash `?` (one code point) thanks to the regex "u" flag
 	writeFileSync(path.join(tmpDir, "leaf1.log"), "x");
-	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/leaf?.log`), {
+	writeFileSync(path.join(tmpDir, "leaf🎯.log"), "x");
+	assert.deepEqual(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/leaf?.log`), {
 		kind: "eligible",
-		targets: [`/tmp/rmguard-tmp-${process.pid}/leaf1.log`],
+		targets: [
+			`/tmp/rmguard-tmp-${process.pid}/leaf1.log`,
+			`/tmp/rmguard-tmp-${process.pid}/leaf🎯.log`,
+		].sort(),
 	});
 });
 
@@ -73,7 +78,7 @@ test("dot-anchored glob matches dotfiles; a non-dot pattern skips them (bash sem
 	writeFileSync(path.join(dotDir, ".cache-junk"), "x");
 	writeFileSync(path.join(dotDir, "cache-junk"), "x");
 	// dot-anchored pattern: the dotfile is part of the judged delete set
-	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/dotcheck/.cache-*`), {
+	assert.deepEqual(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/dotcheck/.cache-*`), {
 		kind: "eligible",
 		targets: [`/tmp/rmguard-tmp-${process.pid}/dotcheck/.cache-junk`],
 	});
@@ -81,14 +86,14 @@ test("dot-anchored glob matches dotfiles; a non-dot pattern skips them (bash sem
 	// (bash would not pass it to rm either); the plain file is judged. A
 	// leading-* pattern regex-matches the dotfile, so this case only passes
 	// when the dotfile skip actually runs.
-	assert.deepEqual(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/dotcheck/*cache*`), {
+	assert.deepEqual(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/dotcheck/*cache*`), {
 		kind: "eligible",
 		targets: [`/tmp/rmguard-tmp-${process.pid}/dotcheck/cache-junk`],
 	});
 });
 
 test("glob with no matches is eligible (rm will no-op with an error)", () => {
-	const verdict = eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/no-such-thing-*.log`);
+	const verdict = run(`rm -rf /tmp/rmguard-tmp-${process.pid}/no-such-thing-*.log`);
 	assert.deepEqual(verdict, { kind: "eligible", targets: [] });
 });
 
@@ -102,7 +107,7 @@ test("glob matching a symlink that escapes scope denies via the per-match scope 
 	const link = path.join("/tmp", `rmguard-tmp-${process.pid}`, "escape-link");
 	rmSync(link, { force: true }); // tolerate a crashed prior run at the same pid
 	symlinkSync("/etc", link);
-	assert.equal(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/escape-link`).kind, "deny");
+	assert.equal(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/escape-link`).kind, "deny");
 	// a glob whose expansion includes the escaping link is judged per match:
 	// the in-scope matches stay eligible only if the escaping match also stays
 	// in scope — here it denies, which is the safe direction.
@@ -121,7 +126,7 @@ test("glob anchored at the home directory denies", () => {
 test("relative glob with a literal subdirectory prefix expands", () => {
 	writeFileSync(path.join(proj, "sub", "build-stamp-a"), "x");
 	writeFileSync(path.join(proj, "sub", "build-stamp-b"), "x");
-	const verdict = eligible("rm -rf sub/build-stamp-*");
+	const verdict = run("rm -rf sub/build-stamp-*");
 	assert.deepEqual([...verdict.targets].sort(), [
 		`${proj}/sub/build-stamp-a`,
 		`${proj}/sub/build-stamp-b`,
@@ -131,7 +136,7 @@ test("relative glob with a literal subdirectory prefix expands", () => {
 test("glob in the cwd expands relative to the session cwd", () => {
 	writeFileSync(path.join(proj, "cache-part-a"), "x");
 	writeFileSync(path.join(proj, "cache-part-b"), "x");
-	const verdict = eligible("rm -rf cache-part-*");
+	const verdict = run("rm -rf cache-part-*");
 	assert.deepEqual([...verdict.targets].sort(), [`${proj}/cache-part-a`, `${proj}/cache-part-b`].sort());
 });
 
@@ -143,7 +148,7 @@ test("glob expansion cap: exactly 64 matches is eligible, 65 defers", () => {
 	defer(`rm -rf /tmp/rmguard-cap-${process.pid}/many-*`);
 	// boundary: GLOB_MATCH_CAP (64) matches stay judgeable, one more defers
 	for (let i = 0; i < 64; i++) writeFileSync(path.join(dir, `edge-${String(i).padStart(3, "0")}`), "x");
-	const at = eligible(`rm -rf /tmp/rmguard-cap-${process.pid}/edge-*`);
+	const at = run(`rm -rf /tmp/rmguard-cap-${process.pid}/edge-*`);
 	assert.equal(at.kind, "eligible");
 	assert.deepEqual([...at.targets].sort(), Array.from({ length: 64 }, (_, i) => `/tmp/rmguard-cap-${process.pid}/edge-${String(i).padStart(3, "0")}`).sort());
 	writeFileSync(path.join(dir, "edge-064"), "x");
@@ -158,7 +163,7 @@ test("mixed literal and glob targets in one rm are each judged", () => {
 	defer("rm -rf $CACHE_DIR cache-part-*");
 	// when all targets judge, the expansion applies alongside literals
 	writeFileSync(path.join(proj, "cache-part-b"), "x");
-	const both = eligible("rm -rf node_modules/.cache cache-part-*");
+	const both = run("rm -rf node_modules/.cache cache-part-*");
 	assert.deepEqual([...both.targets].sort(), [`node_modules/.cache`, `${proj}/cache-part-a`, `${proj}/cache-part-b`].sort());
 });
 
@@ -171,7 +176,7 @@ test("glob rm in a multi-segment command defers (prior segment could create a sy
 	defer("ln -s /etc /tmp/d/a.txt && rm -rf /tmp/d/a.txt/*");
 	defer("mkdir -p /tmp/d && rm -rf /tmp/d/*");
 	// single-segment glob rm is unaffected
-	assert.equal(eligible("rm -rf /tmp/rmguard-tmp-" + process.pid + "/build-12?").kind, "eligible");
+	assert.equal(run("rm -rf /tmp/rmguard-tmp-" + process.pid + "/build-12?").kind, "eligible");
 });
 
 test("out-of-scope literal prefix defers even with zero matches", () => {
@@ -185,7 +190,7 @@ test("literal component after a glob resolves to the targeted files", () => {
 	writeFileSync(path.join(proj, "node_modules/cache-a/package.json"), "{}");
 	// a join bug resolving to the matched directory instead of the file would
 	// still be in scope — this pins the resolution to the file exactly
-	assert.deepEqual(eligible("rm -rf node_modules/cach*/package.json"), {
+	assert.deepEqual(run("rm -rf node_modules/cach*/package.json"), {
 		kind: "eligible",
 		targets: [`${proj}/node_modules/cache-a/package.json`],
 	});
@@ -193,17 +198,35 @@ test("literal component after a glob resolves to the targeted files", () => {
 
 test("glob match resolving to a regular file with a further glob component yields no matches", () => {
 	// cache-a/package.json is a file; enumerating it hits the readdir catch
-	const verdict = eligible("rm -rf node_modules/cach*/package.json/inner*");
+	const verdict = run("rm -rf node_modules/cach*/package.json/inner*");
 	assert.deepEqual(verdict, { kind: "eligible", targets: [] });
 });
 
+test("each glob component matches real entries against the accumulated matches", () => {
+	// the second glob component must enumerate inside the first component's
+	// matches (cache-a, cache-b), not against a stale prefix or the cwd —
+	// a regression there would judge the rm against a wrong target set
+	mkdirSync(path.join(proj, "node_modules/cache-a"), { recursive: true });
+	mkdirSync(path.join(proj, "node_modules/cache-b"), { recursive: true });
+	writeFileSync(path.join(proj, "node_modules/cache-a/pkg-one"), "x");
+	writeFileSync(path.join(proj, "node_modules/cache-b/pkg-two"), "x");
+	const verdict = run("rm -rf node_modules/cach*/pkg-*");
+	assert.deepEqual(verdict, {
+		kind: "eligible",
+		targets: [
+			`${proj}/node_modules/cache-a/pkg-one`,
+			`${proj}/node_modules/cache-b/pkg-two`,
+		].sort(),
+	});
+});
+
 test("benign non-rm segments pass through with the judged rm", () => {
-	assert.equal(eligible("rm -rf dist; echo done").kind, "eligible");
-	assert.equal(eligible("echo hi && rm -rf dist").kind, "eligible");
+	assert.equal(run("rm -rf dist; echo done").kind, "eligible");
+	assert.equal(run("echo hi && rm -rf dist").kind, "eligible");
 });
 
 test("recursive rm on a /tmp target is eligible", () => {
-	assert.equal(eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-123`).kind, "eligible");
+	assert.equal(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-123`).kind, "eligible");
 });
 
 test("variable indirection, quotes and substitution defer", () => {
@@ -223,9 +246,9 @@ test("delete-everything glob shapes defer", () => {
 });
 
 test("literal assignments from the same command are substituted", () => {
-	assert.equal(eligible("WT=/tmp/x; rm -rf $WT").kind, "eligible");
-	assert.equal(eligible("WT=./dist; rm -rf $WT").kind, "eligible");
-	assert.equal(eligible("export WT=./dist; rm -rf ${WT}").kind, "eligible");
+	assert.equal(run("WT=/tmp/x; rm -rf $WT").kind, "eligible");
+	assert.equal(run("WT=./dist; rm -rf $WT").kind, "eligible");
+	assert.equal(run("export WT=./dist; rm -rf ${WT}").kind, "eligible");
 });
 
 test("assignment values that cannot be resolved keep the target unresolvable", () => {
@@ -335,11 +358,11 @@ test("heredoc bodies are data, not commands", () => {
 	absent('git commit -F - <<EOF\nrm -rf /etc\nEOF');
 	absent('cat <<\'EOF\'\nrm -rf x\nEOF\necho done');
 	// a real rm beside a heredoc is still judged
-	assert.deepEqual(eligible("rm -rf dist <<'EOF'\nanything rm -rf here\nEOF"), {
+	assert.deepEqual(run("rm -rf dist <<'EOF'\nanything rm -rf here\nEOF"), {
 		kind: "eligible",
 		targets: ["dist"],
 	});
-	assert.deepEqual(eligible("rm -rf node_modules/.cache <<'EOF'\nbody\nEOF"), {
+	assert.deepEqual(run("rm -rf node_modules/.cache <<'EOF'\nbody\nEOF"), {
 		kind: "eligible",
 		targets: ["node_modules/.cache"],
 	});
@@ -372,12 +395,12 @@ test("<< inside arithmetic is a left shift, not a heredoc", () => {
 	absent("[[ 1<<2 == 4 ]] 2>/dev/null || true");
 	absent("a=$[1<<2]");
 	// the umpire's confirmed regression shape: a real rm after the arithmetic is still judged
-	assert.deepEqual(eligible("echo $(( 1<<2 ))\nrm -rf /tmp/build-123"), {
+	assert.deepEqual(run("echo $(( 1<<2 ))\nrm -rf /tmp/build-123"), {
 		kind: "eligible",
 		targets: ["/tmp/build-123"],
 	});
-	assert.deepEqual(eligible("x=$((1<<2)); rm -rf dist"), { kind: "eligible", targets: ["dist"] });
-	assert.deepEqual(eligible("[[ 1<<2 -eq 4 ]] && rm -rf dist"), { kind: "eligible", targets: ["dist"] });
+	assert.deepEqual(run("x=$((1<<2)); rm -rf dist"), { kind: "eligible", targets: ["dist"] });
+	assert.deepEqual(run("[[ 1<<2 -eq 4 ]] && rm -rf dist"), { kind: "eligible", targets: ["dist"] });
 });
 
 test("heredoc delimiter may be space-separated from <<", () => {
@@ -398,7 +421,7 @@ test("case-context << is copied literally, never a phantom heredoc", () => {
 });
 
 test("pending queue does not leak past the heredoc consumer", () => {
-	assert.deepEqual(eligible('git commit -m "$(cat <<\'EOF\'\nEOF\n)" && rm -rf dist'), {
+	assert.deepEqual(run('git commit -m "$(cat <<\'EOF\'\nEOF\n)" && rm -rf dist'), {
 		kind: "eligible",
 		targets: ["dist"],
 	});
@@ -410,7 +433,7 @@ test("same-line multiple heredocs consume their bodies in order (FIFO)", () => {
 
 test("quote state carries across lines: << inside a multi-line string is not a heredoc", () => {
 	// traced from round-4 review: the per-line quote reset swallowed the real rm line
-	assert.deepEqual(eligible('"a\n<< EOF\nman"\nrm -rf /tmp/victim\nEOF\necho done'), {
+	assert.deepEqual(run('"a\n<< EOF\nman"\nrm -rf /tmp/victim\nEOF\necho done'), {
 		kind: "eligible",
 		targets: ["/tmp/victim"],
 	});
