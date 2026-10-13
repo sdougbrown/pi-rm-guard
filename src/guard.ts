@@ -302,7 +302,7 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 	const lines = command.split("\n");
 	const out: string[] = [];
 	const pending: { text: string; stripTabs: boolean; quoted: boolean; unmatched?: boolean }[] = [];
-	const contexts: { type: "arith" | "test" | "subst" | "case"; depth: number; kind?: "paren" | "bracket"; brackets?: number; simple?: boolean }[] = [];
+	const contexts: { type: "arith" | "test" | "subst" | "case"; depth: number; kind?: "paren" | "bracket"; brackets?: number; simple?: boolean; nested?: boolean }[] = [];
 	// quote state carries across lines: a << inside a multi-line quoted string
 	// is shell text, and only carried state can see that
 	let quote: string | null = null;
@@ -316,12 +316,24 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 			const candidate = first.stripTabs ? line.replace(/^\t+/, "") : line;
 			if (candidate === first.text && !first.unmatched) pending.shift();
 			else if (!first.quoted && !first.unmatched && /\$\(|\$\{|`/.test(line)) {
-				// a substitution in an unquoted body expands in bash; a quote-blind
-				// paren balance cannot tell where a multi-line one ends (a ) inside
-				// quotes undercounts and would swallow the expanded lines), so any
-				// substitution in an unquoted body defers the command — the safe
-				// direction
-				return { command, unterminated: true };
+				// a substitution in an unquoted body expands in bash. Pass the line
+				// through for judgment only when it cannot hide a closing paren
+				// inside quotes (no quote chars at all) and its paren balance closes
+				// on the line; anything else defers (a quote-blind balance
+				// undercounts — e.g. "$(echo 'a)b')" — and would swallow the lines
+				// bash expanded). Single-line, quote-free substitutions are the
+				// common real-world shapes (commit messages, templates) and stay
+				// judgeable instead of always punting to the human.
+				let bal = 0;
+				const quoteFree = !/['"`]/.test(line);
+				if (quoteFree) {
+					for (let k = 0; k < line.length; k++) {
+						if (line[k] === "(") bal++;
+						else if (line[k] === ")" && bal > 0) bal--;
+					}
+				}
+				if (quoteFree && bal === 0) out.push(line);
+				else return { command, unterminated: true };
 			}
 			continue;
 		}
@@ -372,6 +384,7 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 					continue;
 				}
 				if (ch === ")") {
+					parenBoundary = top.depth > 1; // nested close inside "…$(…)"; over-boundary is the safe direction
 					top.depth--;
 					result += ch;
 					if (top.depth === 0) {
@@ -431,7 +444,7 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 				continue;
 			}
 			if (quote === '"' && ch === "$" && line[i + 1] === "(") {
-				contexts.push({ type: "subst", depth: 1, simple: true });
+				contexts.push({ type: "subst", depth: 1, simple: true, nested: false });
 				result += "$(";
 				i++;
 				continue;
@@ -441,6 +454,7 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 				// does not close the quote); inside single quotes there are no escapes
 				if (quote === '"' && ch === "\\" && i + 1 < line.length) {
 					result += ch + line[i + 1];
+					parenBoundary = false; // an escaped # is a literal word char
 					i++;
 					continue;
 				}
@@ -460,20 +474,27 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 			}
 			if (ch === "$" && line[i + 1] === "(") {
 				if (line[i + 2] === "(") {
-					contexts.push({ type: "arith", depth: 2, kind: "paren", brackets: 0 });
+					contexts.push({ type: "arith", depth: 2, kind: "paren", brackets: 0, nested: false });
 					result += "$((";
 					i += 2;
 					continue;
 				}
-				contexts.push({ type: "subst", depth: 1, simple: true });
+				contexts.push({ type: "subst", depth: 1, simple: true, nested: false });
 				result += "$(";
 				i++;
 				continue;
 			}
 			if (ch === "(" && line[i + 1] === "(") {
-				contexts.push({ type: "arith", depth: 2, kind: "paren", brackets: 0 });
+				contexts.push({ type: "arith", depth: 2, kind: "paren", brackets: 0, nested: true });
 				result += "((";
 				i++;
+				continue;
+			}
+			// a bare ( (subshell or group) opens a group: its ) is a word boundary
+			// for a following # comment, unlike the ) closing $( which glues
+			if (ch === "(" && (!top || top.type === "subst")) {
+				contexts.push({ type: "subst", depth: 1, simple: true, nested: true });
+				result += ch;
 				continue;
 			}
 			if (ch === "[" && line[i + 1] === "[") {
@@ -494,12 +515,17 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 				continue;
 			}
 			if (top && top.type === "subst" && ch === ")") {
+				// a nested group's close leaves a comment boundary; the substitution's
+				// own final ) glues a following # to the word in bash (x=$(hi)#)
+				parenBoundary = top.nested === true;
 				top.depth--;
 				result += ch;
 				if (top.depth === 0) contexts.pop();
 				continue;
 			}
 			if (top && top.type === "arith" && ch === ")" && line[i + 1] === ")") {
+				// ((1))# is a comment; x=$((1))# glues (over-boundary is the safe direction)
+				parenBoundary = top.nested === true;
 				contexts.pop();
 				result += "))";
 				i++;
@@ -539,7 +565,12 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 				}
 				// no delimiter characters: not a usable heredoc; keep scanning
 			}
-		parenBoundary = ch === ")" && (!top || top.type === "case" || top.type === "test");
+		// a ) that closed a group leaves a comment boundary (bash: (true)# hi runs
+		// nothing) — but a word character after it re-glues ((true)x# hi runs hi),
+		// and the ) closing $( glues (x=$(hi)#). Set-only across non-word chars;
+		// the subst/arith handlers set it from the popped context's nested flag.
+		if (ch === ")") parenBoundary = true;
+		else if (/[A-Za-z0-9_]/.test(ch)) parenBoundary = false;
 			result += ch;
 		}
 		out.push(result);

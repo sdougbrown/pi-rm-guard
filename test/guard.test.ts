@@ -428,6 +428,11 @@ test("unquoted heredoc bodies expand: substitutions are judged, never swallowed"
 	// multi-line substitutions in unquoted bodies span body lines: each line
 	// of the open substitution is judged, not swallowed
 	defer("cat <<EOF\n$(\nrm -rf /\n)\nEOF");
+	// single-line quote-free substitutions in unquoted bodies are the common
+	// real-world shapes (commit messages, templates) and stay judgeable
+	absent("git commit -F- <<EOF\nfix: bump to $(date)\nEOF");
+	absent("cat <<EOF\nHello $(whoami)\nEOF");
+	absent("cat <<EOF\nHello ${HOME}\nEOF");
 	// a ) hiding inside a quoted string of the substitution is why paren
 	// balance cannot decide the end: defer covers the multi-line shape
 	defer("cat <<EOF\n$(echo 'a)b'\nrm -rf /\n)\nEOF");
@@ -447,6 +452,12 @@ test("an unquoted # starts a comment: << after it never opens a heredoc", () => 
 	// subshell — but a # glued after a substitution's ) is part of the word
 	deny("true |# <<EOF\nrm -rf /\nEOF");
 	deny("(true)# <<EOF\nrm -rf /\nEOF");
+	deny("((1))# <<EOF\nrm -rf /\nEOF");
+	// # after a ) nested inside a substitution is also a comment (the line
+	// bash runs must be judged, not swallowed as heredoc body)
+	defer("x=$( (true)# <<Q\nrm -rf /\nQ\n)");
+	// word characters re-glue the word: the heredoc is real and the body is data
+	absent("(true)x# <<EOF\nrm -rf /\nEOF\necho done");
 	// x=$(hi)# glues the # onto the word in bash: the heredoc is real and the
 	// body line is data (bash does not run the rm)
 	absent("x=$(echo hi)# <<EOF\nrm -rf /\nEOF\necho done");

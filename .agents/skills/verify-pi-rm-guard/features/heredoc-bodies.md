@@ -7,15 +7,20 @@
   executed as shell. This removes two real-world false positives: "unbalanced
   quoting around an rm mention" and "rm is not in leading position" on plain
   `git commit -m "$(cat <<'EOF'...)"` calls.
-- An UNQUOTED delimiter means bash expands the body: body lines containing
-  `$(...)`, `${...}`, or backticks are passed through and judged (defer or
-  deny), never swallowed — including lines inside a substitution that spans
-  several body lines. Quoted bodies stay data.
+- An UNQUOTED delimiter means bash expands the body: a substitution
+  (`$(...)`, `${...}`, backtick) in an unquoted body is passed through and
+  judged when the line is quote-free with balanced parens (the common
+  commit-message and template shapes) and defers the whole command otherwise —
+  a quote-blind paren balance undercounts when a `)` hides inside a quoted
+  string, so no expansion lines are ever swallowed. Quoted bodies stay data.
 - An unquoted `#` at word position starts a comment: operator detection stops
   there for the line, so `echo hi # <<EOF` cannot open a phantom heredoc that
-  swallows a live command on a body-position line. The word boundary is a
-  start-of-line or a `[ \t;&|]` character — a `#` glued after `)` (`x=$(hi)#`)
-  is part of the word in bash, and mid-word `#` never starts one.
+  swallows a live command on a body-position line. Word position: line start,
+  a `[ \t;&|]` character, or a `)` that closed a subshell or arithmetic group
+  (`(true)#`, `((1))#`) — including one nested inside a substitution — while a
+  `#` glued after a substitution's own final `)` (`x=$(hi)#`) or after word
+  characters (`(true)x#`) is part of the word in bash, and mid-word `#` never
+  starts one.
 - A double-quoted command substitution's closing `)` does not close the outer
   `"`; consuming the `"` that immediately follows does. A `#` at word position
   inside the substitution is a comment too. A `<<` after untracked nesting
