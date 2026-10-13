@@ -2,9 +2,11 @@ import { readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 /**
- * Static analysis for recursive `rm` commands. Every unresolvable construct
- * (variables, globs, quotes, redirections, non-rm segments) forces a defer to
- * human approval — this module never widens what it can judge.
+ * Static analysis for recursive `rm` commands. Bounded glob patterns are
+ * expanded here and judged against the real filesystem; every other
+ * unresolvable construct (variables, quotes, redirections, non-rm segments)
+ * — and unbounded glob patterns — forces a defer to human approval. This
+ * module never widens what it can judge beyond what it expands.
  */
 
 export interface EligibleRm {
@@ -278,7 +280,10 @@ const GLOB_MATCH_CAP = 64;
 
 function globComponentToRegex(component: string): RegExp {
 	const escaped = component.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-	return new RegExp(`^${escaped}$`);
+	// The "u" flag makes "." match one code point, so `?` matches one whole
+	// character the way bash's glob does — a supplementary-plane filename like
+	// `leaf🎯` must match `leaf?` here or rm deletes a path the gate never judged.
+	return new RegExp(`^${escaped}$`, "u");
 }
 
 /**
