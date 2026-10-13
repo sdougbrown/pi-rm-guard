@@ -76,7 +76,9 @@ test("decisions backend maps HTTP failures and bad bodies to errors", async () =
 		timeoutMs: 1000,
 		fetch: async () => new Response("{}", { status: 200 }),
 	});
-	assert.ok("error" in (await malformed.decide({ command: "rm -rf dist", intent: "i" })));
+	assert.deepEqual(await malformed.decide({ command: "rm -rf dist", intent: "i" }), {
+		error: "decision API missing probabilities",
+	});
 });
 
 test("decisions backend maps network failures to errors, not throws", async () => {
