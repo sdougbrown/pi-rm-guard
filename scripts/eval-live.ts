@@ -41,7 +41,7 @@ async function runDecisions() {
 		const r = await backend.decide({ command: c.cmd, intent: c.intent, targets: c.targets });
 		const action = "action" in r ? r.action : "error";
 		const want = c.want;
-		const pass = c.want === "yes" ? action === "approve" : c.want === "ask" ? action === "defer" : action !== "approve";
+		const pass = c.want === "yes" ? action === "approve" : action === "defer";
 		if (pass) ok++;
 		console.log(`${pass ? "ok " : "FAIL"} decisions ${action}${"probability" in r ? ` p=${r.probability.toFixed(3)}` : ""} want=${want}  ${c.cmd}`);
 	}
@@ -60,7 +60,7 @@ async function runJev() {
 		const r = await backend.decide({ command: c.cmd, intent: c.intent, targets: c.targets });
 		const action = "action" in r ? r.action : "error";
 		const want = c.want;
-		const pass = c.want === "yes" ? action === "approve" : c.want === "ask" ? action === "defer" : action !== "approve";
+		const pass = c.want === "yes" ? action === "approve" : action === "defer";
 		if (pass) ok++;
 		console.log(`${pass ? "ok " : "FAIL"} jev ${action}${"probability" in r ? ` p=${r.probability.toFixed(3)}` : ""} want=${want}  ${c.cmd}`);
 	}
