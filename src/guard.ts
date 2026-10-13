@@ -278,12 +278,18 @@ function isUnder(resolved: string, root: string): boolean {
 /** Matches per glob target beyond which the gate defers instead of expanding. */
 const GLOB_MATCH_CAP = 64;
 
-function globComponentToRegex(component: string): RegExp {
-	const escaped = component.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-	// The "u" flag makes "." match one code point, so `?` matches one whole
-	// character the way bash's glob does — a supplementary-plane filename like
-	// `leaf🎯` must match `leaf?` here or rm deletes a path the gate never judged.
-	return new RegExp(`^${escaped}$`, "u");
+/**
+ * The gate must judge every entry bash could hand to rm, in any locale: `?`
+ * matches one byte under LC_ALL=C but one character under a UTF-8 locale (the
+ * two sets differ for multi-byte names — `leaf??*` matches `leaf🎯` in C
+ * locale, `leaf?` matches it in a UTF-8 locale). Test both semantics and
+ * judge the union; a file matched under neither semantics is never expanded
+ * by bash, so missing it is safe.
+ */
+function globComponentMatches(entry: string, component: string): boolean {
+	const escape = (p: string) => p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+	if (new RegExp(`^${escape(component)}$`, "u").test(entry)) return true; // one code point
+	return new RegExp(`^${escape(Buffer.from(component, "utf8").toString("latin1"))}$`).test(Buffer.from(entry, "utf8").toString("latin1")); // one byte
 }
 
 /**
@@ -362,7 +368,6 @@ function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } |
 			current = next;
 			continue;
 		}
-		const regex = globComponentToRegex(component);
 		const allowDotfiles = component.startsWith(".");
 		const next: string[] = [];
 		for (const dir of current) {
@@ -374,7 +379,7 @@ function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } |
 			}
 			for (const entry of entries) {
 				if (!allowDotfiles && entry.startsWith(".")) continue;
-				if (regex.test(entry)) next.push(path.join(dir, entry));
+				if (globComponentMatches(entry, component)) next.push(path.join(dir, entry));
 			}
 		}
 		current = next;

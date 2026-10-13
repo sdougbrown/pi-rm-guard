@@ -55,17 +55,25 @@ test("bounded globs expand in the gate and are eligible with expanded targets", 
 		`/tmp/rmguard-tmp-${process.pid}/avenor-verify.abc`,
 		`/tmp/rmguard-tmp-${process.pid}/avenor-verify.dir`,
 	].sort());
-	// question-mark glob, single component; a supplementary-plane name is one
-	// bash `?` (one code point) thanks to the regex "u" flag
+	// question-mark glob, single component: a supplementary-plane name is one
+	// bash `?` in a UTF-8 locale (code-point semantics) and matches multi-?
+	// patterns byte-wise in C locale — the gate judges the union of both
 	writeFileSync(path.join(tmpDir, "leaf1.log"), "x");
 	writeFileSync(path.join(tmpDir, "leaf🎯.log"), "x");
-	assert.deepEqual(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/leaf?.log`), {
-		kind: "eligible",
-		targets: [
-			`/tmp/rmguard-tmp-${process.pid}/leaf1.log`,
-			`/tmp/rmguard-tmp-${process.pid}/leaf🎯.log`,
-		].sort(),
-	});
+	const qv = run(`rm -rf /tmp/rmguard-tmp-${process.pid}/leaf?.log`);
+	assert.equal(qv.kind, "eligible");
+	assert.deepEqual([...qv.targets].sort(), [
+		`/tmp/rmguard-tmp-${process.pid}/leaf1.log`,
+		`/tmp/rmguard-tmp-${process.pid}/leaf🎯.log`,
+	]);
+});
+
+test("multi-? patterns match byte-wise like LC_ALL=C bash, so the escape is judged", () => {
+	// leaf🎯 is one code point but four UTF-8 bytes: C-locale bash expands
+	// leaf??* to it while a code-point-only regex does not — a zero-match
+	// verdict would let the symlink escape the judged set entirely
+	symlinkSync("/etc", path.join("/tmp", `rmguard-tmp-${process.pid}`, "leaf🎯"));
+	assert.equal(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/leaf??*/passwd`).kind, "deny");
 });
 
 test("dot-anchored glob matches dotfiles; a non-dot pattern skips them (bash semantics)", () => {
@@ -208,13 +216,11 @@ test("each glob component matches real entries against the accumulated matches",
 	writeFileSync(path.join(proj, "node_modules/cache-a/pkg-one"), "x");
 	writeFileSync(path.join(proj, "node_modules/cache-b/pkg-two"), "x");
 	const verdict = run("rm -rf node_modules/cach*/pkg-*");
-	assert.deepEqual(verdict, {
-		kind: "eligible",
-		targets: [
-			`${proj}/node_modules/cache-a/pkg-one`,
-			`${proj}/node_modules/cache-b/pkg-two`,
-		].sort(),
-	});
+	assert.equal(verdict.kind, "eligible");
+	assert.deepEqual([...verdict.targets].sort(), [
+		`${proj}/node_modules/cache-a/pkg-one`,
+		`${proj}/node_modules/cache-b/pkg-two`,
+	]);
 });
 
 test("benign non-rm segments pass through with the judged rm", () => {
