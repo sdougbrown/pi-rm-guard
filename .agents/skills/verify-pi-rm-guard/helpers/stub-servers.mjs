@@ -165,4 +165,4 @@ if (process.argv[3] === "--selftest") {
 	}
 }
 
-setInterval(() => {}, 1 << 30);
+// the two listening http servers keep the event loop alive
