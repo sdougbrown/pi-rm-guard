@@ -376,6 +376,39 @@ test("heredoc bodies are data, not commands", () => {
 	absent('cat <<EOF\nrm -rf x xEOF\nEOF');
 });
 
+test("unquoted delimiter words run past word characters (bash word grammar)", () => {
+	// bash reads the word until whitespace/metachar: EOF-x closes the heredoc.
+	// A shorter recorded word would swallow the real command line between
+	// bash's true terminator and the gate's.
+	deny('cat <<EOF-x\nEOF-x\nrm -rf /\n');
+	deny('cat <<E.OF\nE.OF\nrm -rf /\n');
+	// `;` still terminates the word like in bash
+	absent('cat <<EOF;\nrm -rf x\nEOF\necho done');
+});
+
+test("<< -EOF: the dash after whitespace is part of the delimiter, not the tab-strip flag", () => {
+	// bash closes the body at the line -EOF; a gate that recorded delimiter
+	// EOF with tab-strip would keep the body open and swallow real commands
+	absent('cat << -EOF\nrm -rf x\n-EOF\necho done');
+	// <<- (dash immediately after <<) still strips leading tabs
+	absent('cat <<-EOF\n\trm -rf x\n\tEOF');
+});
+
+test("line-continuation delimiter word never claims a shorter terminator", () => {
+	// bash joins cat <<E\ + OF into the word EOF; a gate that recorded the
+	// short word E would terminate the body at a bare "E" line while bash is
+	// still consuming body — the rm line would run unjudged. Not modelable
+	// per-line, so the body is over-judged instead (deny here, never absent).
+	deny('cat <<E\\\nOF\nrm -rf /\necho done');
+});
+
+test("a here-string (<<<) does not open a phantom heredoc", () => {
+	// single line: the payload is string data, never shell
+	absent("cat <<<'rm -rf x'");
+	// next line must still be judged as a command, not swallowed as body
+	deny("cat <<<'data'\nrm -rf /");
+});
+
 test("unterminated heredoc defers", () => {
 	defer("git commit -m msg <<EOF\nrm -rf /");
 	defer("cat <<'EOF'\nrm -rf x");

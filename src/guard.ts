@@ -201,15 +201,28 @@ function expandTilde(target: string, home: string): string {
 	return target;
 }
 
-/** Parse the delimiter spec at line[i] ("<<", optional "-", dequoting quotes and backslashes per bash); null when not a usable heredoc. */
+/**
+ * Parse the delimiter spec at line[i] ("<<", optional immediate "-", dequoting
+ * quotes and backslashes per bash); null when not a usable heredoc.
+ *
+ * The unquoted delimiter word is a shell word: it runs until whitespace or a
+ * metacharacter (`;|&<>()`), so `<<EOF-x` and `<<E.OF` are single words even
+ * though the characters are outside [A-Za-z0-9_]. The <<- tab-strip flag only
+ * applies when the dash immediately follows `<<` — with whitespace in between
+ * (`<< -EOF`) the dash is part of the word (both verified against bash).
+ *
+ * A word ending in a line-continuation backslash (`cat <<E\` + `OF`) extends
+ * across lines, which this per-line parser cannot model. Return null in that
+ * case: the body is then scanned as live shell text and over-judged (the safe
+ * direction) instead of the body being terminated early by a wrong shorter
+ * word while bash keeps consuming it.
+ */
 function parseHeredocDelim(line: string, i: number): { text: string; stripTabs: boolean; end: number } | null {
 	let j = i + 2;
-	while (line[j] === " " || line[j] === "\t") j++;
 	const stripTabs = line[j] === "-";
-	if (stripTabs) {
-		j++;
-		while (line[j] === " " || line[j] === "\t") j++;
-	}
+	if (stripTabs) j++;
+	else while (line[j] === " " || line[j] === "\t") j++;
+	while (line[j] === " " || line[j] === "\t") j++;
 	let delim = "";
 	let delimQuote: string | null = null;
 	while (j < line.length) {
@@ -229,17 +242,16 @@ function parseHeredocDelim(line: string, i: number): { text: string; stripTabs: 
 			j += 2;
 			continue;
 		}
+		if (c === "\\" && j + 1 === line.length) return null; // line continuation: word spans lines, unmodelable here
 		if (c === "'" || c === '"') {
 			delimQuote = c;
 			j++;
 			continue;
 		}
-		if (/[A-Za-z0-9_]/.test(c)) {
-			delim += c;
-			j++;
-			continue;
-		}
-		break;
+		// shell word: any character except whitespace and metacharacters
+		if (/[ \t|&;()<>]/.test(c)) break;
+		delim += c;
+		j++;
 	}
 	if (delim.length === 0) return null;
 	return { text: delim, stripTabs, end: j };

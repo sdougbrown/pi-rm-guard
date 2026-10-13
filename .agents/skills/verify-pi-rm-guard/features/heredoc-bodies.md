@@ -16,6 +16,15 @@
 - Delimiter quoting and escaping are dequoted the way bash does before
   matching the terminator: `<<E"OF"`, `<<'E'OF`, `<<E\OF` all terminate at a
   line reading `EOF`. Whitespace between `<<` and the delimiter is skipped.
+- The unquoted delimiter word is a shell word: it runs until whitespace or a
+  metacharacter, so delimiters may contain `-`, `.`, `$` etc. (`<<EOF-x`,
+  `<<E.OF`). The `<<-` tab-strip flag applies only when the dash immediately
+  follows `<<` — with whitespace between (`<< -EOF`) the dash is part of the
+  word. A delimiter word ending in a line-continuation backslash spans lines;
+  the gate cannot model that, so it declines the heredoc and the body is
+  scanned as live shell text (over-judged, the safe direction — the body
+  never closes early at a wrong shorter word). `<<<` here-strings never open
+  a heredoc.
 - A real rm beside a heredoc (`rm -rf dist <<'EOF'`) is still judged normally —
   expansion, scope, and the decision model all apply.
 - An unterminated heredoc defers: the gate cannot know where the body ends, so
