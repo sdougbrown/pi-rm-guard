@@ -50,6 +50,9 @@ test("decisions backend maps the 3-way choice to approve/deny/defer", async () =
 	const deny = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.001, 0.001, 0.999) }).decide({ command: "rm -rf /", intent: "i" });
 	assert.deepEqual(deny, { action: "deny", probability: 0.999, label: "deny" });
 
+	const askDefer = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.1, 0.85, 0.05) }).decide({ command: "rm -rf x", intent: "i" });
+	assert.deepEqual(askDefer, { action: "defer", probability: 0.85, label: "ask" });
+
 	const defer = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.5, 0.49, 0.01) }).decide({ command: "rm -rf x", intent: "i" });
 	assert.deepEqual(defer, { action: "defer", probability: 0.5, label: "approve" });
 
@@ -143,6 +146,19 @@ test("jev backend falls back to bool when choice is rejected", async () => {
 	await backend.decide({ command: "rm -rf dist", intent: "i" });
 	assert.equal(questionsSeen.length, 3);
 	assert.ok("safe" in questionsSeen[2]);
+
+	// bool fallback low-probability branch: a "not clearly safe" answer defers
+	let lowBoolCalls = 0;
+	const lowBool = createJevBackend(fakeRegistry(), {
+		modelId: "jev-latest",
+		apiKey: undefined,
+		classify: async () => {
+			lowBoolCalls++;
+			if (lowBoolCalls === 1) throw new Error("no choice support");
+			return { answers: { safe: { probability: 0.4 } }, stopReason: "stop" };
+		},
+	});
+	assert.deepEqual(await lowBool.decide({ command: "rm -rf dist", intent: "i" }), { action: "defer", probability: 0.4, label: "ask" });
 });
 
 test("jev backend defers on low probability and surfaces failures as errors", async () => {
