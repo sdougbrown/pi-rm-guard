@@ -20,12 +20,12 @@ else (pi, the extension, the guard, bash, the filesystem) is real.
 
 No build step: the repo runs TypeScript directly under node (>= 24).
 
-1. Run the doctor first: `skills/verify-pi-rm-guard/helpers/doctor.sh`
+1. Run the doctor first: `.agents/skills/verify-pi-rm-guard/helpers/doctor.sh`
 2. Drive a case (each invocation is self-contained — starts its own stubs,
    runs one pi process, tears the stubs down):
 
 ```sh
-skills/verify-pi-rm-guard/helpers/run-case.sh <case-name> "<command>" '<decision.json>'
+.agents/skills/verify-pi-rm-guard/helpers/run-case.sh <case-name> "<command>" '<decision.json>'
 ```
 
 `<decision.json>` controls the stub decision model, e.g.
@@ -73,7 +73,7 @@ harness also maps `eligible-literal`, `low-conf`, `deny-root`, `defer-var`, and
 `glob-unbounded`):
 
 ```sh
-H=skills/verify-pi-rm-guard/helpers
+H=.agents/skills/verify-pi-rm-guard/helpers
 D='{"action":"A","probabilities":{"A":0.95,"B":0.03,"C":0.02}}'
 $H/run-case.sh approve   'rm -rf /tmp/rmguard-verify-victim' "$D"   # DELETED, autoApproved:true
 $H/run-case.sh deny      'rm -rf /'                          "$D"   # SURVIVED, gate:denied
@@ -86,7 +86,7 @@ feature, mirror it in `features/`.
 
 ## Evidence
 
-Everything a proof needs lands under `skills/verify-pi-rm-guard/evidence/<stamp>-<case>/`:
+Everything a proof needs lands under `.agents/skills/verify-pi-rm-guard/evidence/<stamp>-<case>/`:
 
 - `output.txt` — full pi print-mode output (block reasons, "done");
 - `sessions/*.jsonl` — the session log, including the `rm-guard` custom

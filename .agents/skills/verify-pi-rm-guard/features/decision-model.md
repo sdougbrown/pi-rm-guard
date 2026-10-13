@@ -27,7 +27,7 @@ The stub decisions endpoint's verdict is dictated by the third argument, so
 all three outcomes are drivable against the same command:
 
 ```sh
-H=skills/verify-pi-rm-guard/helpers
+H=.agents/skills/verify-pi-rm-guard/helpers
 $H/run-case.sh approve 'rm -rf /tmp/rmguard-verify-victim' '{"action":"A","probabilities":{"A":0.95,"B":0.03,"C":0.02}}'
 $H/run-case.sh low-conf 'rm -rf /tmp/rmguard-verify-victim' '{"action":"B","probabilities":{"A":0.10,"B":0.80,"C":0.10}}'
 ```
