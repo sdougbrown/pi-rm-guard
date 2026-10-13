@@ -109,10 +109,8 @@ echo "evidence:  $CASE_DIR"
 # Entry tokens are simple field checks against any one rm-guard entry
 # (e.g. "gate=denied", "action=approve autoApproved=true"); "absent" requires
 # no rm-guard entry at all; "targets=[]" an empty, "targets=+" a non-empty list.
-# glob-* expectations follow the glob-unbounded case name; gate-side glob
-# expansion and its feature doc (features/glob-targets.md) live on the stacked
-# glob-expansion branch — on this branch every glob defers, so only
-# glob-unbounded is asserted here.
+# glob-* cases follow features/glob-targets.md (gate-side glob expansion),
+# which exists on this branch.
 expectation_for() {
 	case "$1" in
 		approve)          echo "DELETED|action=approve autoApproved=true|1" ;;
@@ -124,6 +122,8 @@ expectation_for() {
 		heredoc-mention)  echo "SURVIVED|absent|0" ;;
 		arith-shift)      echo "DELETED|action=approve autoApproved=true|1" ;;
 		heredoc-delete)   echo "DELETED|action=approve autoApproved=true|1" ;;
+		glob-approved)    echo "SURVIVED|action=approve autoApproved=true targets=[]|1" ;;
+		glob-real)        echo "DELETED|action=approve autoApproved=true targets=+|1" ;;
 		*)                echo "" ;;
 	esac
 }

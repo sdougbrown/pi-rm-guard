@@ -16,9 +16,19 @@ string) pass through untouched. Recursive `rm` invocations must have fully
 literal targets:
 
 - **Statically resolvable targets only** — variable indirection (`$CACHE_DIR`),
-  globs, quoted targets, command substitution, and redirections defer to a
-  human. Exception: literal assignments earlier in the same command
+  quoted targets, command substitution, and redirections defer to a human.
+  Exception: literal assignments earlier in the same command
   (`WT=/tmp/x; rm -rf $WT`) are substituted and checked like any literal path.
+- **Globs are expanded by the gate** — a target with `*` or `?` is expanded
+  against the real filesystem before the scope check, and every match is judged
+  like a literal path (so a matching symlink pointing outside scope still
+  defers/denies). Bounds: every globbed component must contain at least one
+  alphanumeric, `_`, or `-` character (`rm -rf *`, `rm -rf dist/*`, and dot-only
+  shapes like `.*` defer), and expansion past 64 matches defers. A glob anchored under a system path (`/etc/foo*`) denies even
+  when it matches nothing. Known limit: rm re-globs at execution, so a file
+  created in the checked directory between the check and the rm run is deleted
+  too — the pattern's directories are always literal, in-scope paths, and a
+  glob rm in a multi-segment command defers outright (see below).
 - **Heredoc bodies are data** — an rm mention inside a heredoc (`<<'EOF'`,
   `<<EOF`, `<<-EOF`, including inside a double-quoted command substitution) is
   never executed as shell, so it is absent from the gate; a real rm beside a

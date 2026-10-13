@@ -77,9 +77,11 @@ H=.agents/skills/verify-pi-rm-guard/helpers
 D='{"action":"A","probabilities":{"A":0.95,"B":0.03,"C":0.02}}'
 $H/run-case.sh approve   'rm -rf /tmp/rmguard-verify-victim' "$D"   # DELETED, autoApproved:true
 $H/run-case.sh deny      'rm -rf /'                          "$D"   # SURVIVED, gate:denied
-$H/run-case.sh defer     'rm -rf /tmp/rmguard-verify-vic*'   "$D"   # SURVIVED, gate:ineligible
+$H/run-case.sh defer     'rm -rf /tmp/rmguard-verify-victim/*' "$D" # SURVIVED, gate:ineligible (unbounded glob)
 $H/run-case.sh absent    'rm /tmp/rmguard-verify-victim/marker' "$D" # DELETED, no rm-guard entry
 ```
+
+Glob-specific cases (gate-side expansion) live in `features/glob-targets.md`.
 
 Expected end states per case are in `features/`. When adding a case for a new
 feature, mirror it in `features/`.

@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -20,6 +20,10 @@ const UNRESOLVABLE = new Set(["$", "`", '"', "'", "\\", "*", "?", "[", "<", ">",
 function hasUnresolvableChars(token: string): boolean {
 	for (const ch of token) if (UNRESOLVABLE.has(ch)) return true;
 	return false;
+}
+
+function hasGlobChars(token: string): boolean {
+	return token.includes("*") || token.includes("?");
 }
 
 function isRecursiveFlag(token: string): boolean {
@@ -440,8 +444,9 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 }
 
 /**
- * Judge one rm segment. Returns its literal targets or a defer reason.
- * Targets are returned unexpanded; path resolution happens in isTargetInScope.
+ * Judge one rm segment. Returns its targets (literal paths or glob patterns) or
+ * a defer reason. Glob expansion and path resolution happen later, in
+ * analyzeCommand / isTargetInScope.
  */
 function analyzeSegment(segment: string, home: string, vars: Map<string, string>): { targets: string[] } | { defer: string } {
 	const tokens = segment.split(/\s+/).filter(Boolean);
@@ -468,7 +473,11 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 		}
 		const expanded = expandTilde(token, home);
 		const substituted = substituteVars(expanded, vars, home);
-		if (hasUnresolvableChars(substituted)) {
+		// Glob characters are allowed in targets: expandGlobTarget expands them
+		// against the real filesystem before the scope check. Everything else
+		// unresolvable still defers.
+		const unresolvableWithoutGlob = [...substituted].some((ch) => UNRESOLVABLE.has(ch) && ch !== "*" && ch !== "?");
+		if (unresolvableWithoutGlob) {
 			return { defer: `target is not statically resolvable: ${token}` };
 		}
 		targets.push(expandTilde(substituted, home));
@@ -506,6 +515,113 @@ export function resolveReal(target: string, cwd: string): string {
 
 function isUnder(resolved: string, root: string): boolean {
 	return resolved === root || resolved.startsWith(root + path.sep);
+}
+
+/** Matches per glob target beyond which the gate defers instead of expanding. */
+const GLOB_MATCH_CAP = 64;
+
+function globComponentToRegex(component: string): RegExp {
+	const escaped = component.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+	return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * Expand one glob target (containing * or ?) against the real filesystem, so
+ * the scope check sees every path the shell would hand to rm — the glob never
+ * reaches the shell unexpanded. Two bounds keep the set judgeable:
+ *
+ * - Every globbed component must contain at least one alphanumeric, `_`, or
+ *   `-` character, so `rm -rf *`, `rm -rf dist/*`, and dot-only shapes like
+ *   `.*` still defer.
+ * - Expansion stops at GLOB_MATCH_CAP matches; beyond that a human decides.
+ *
+ * The literal prefix (components before the first glob) is denied on its own
+ * for root/system/home: `rm -rf /etc/foo*` must not become eligible merely
+ * because it matches nothing. Matches are NOT guaranteed in-tree: a literal
+ * component after the glob is realpath'd and may escape via symlink — the
+ * safety net is the per-match realpath re-resolution in isTargetInScope, so a
+ * symlink matching the pattern and pointing outside cwd//tmp is caught the
+ * same way as literal targets.
+ *
+ * Known limit: rm re-globs at execution, so a file created in the checked
+ * directory between this expansion and the rm run is also deleted. The pattern's
+ * directories are literal and scope-checked, so the blast radius stays inside
+ * cwd//tmp; this is the same trust level the gate already extends to /tmp.
+ */
+function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } | { defer: string } | { deny: string } {
+	const absolute = pattern.startsWith("/");
+	const components = pattern.split("/").filter((c) => c.length > 0 && c !== ".");
+	let firstGlob = components.findIndex((c) => hasGlobChars(c));
+	if (firstGlob === -1) firstGlob = components.length;
+
+	// Deny/scope-check the literal prefix as a directory that will be enumerated.
+	// This runs before the unbounded-pattern check so that `/etc/*` denies (the
+	// prefix is a system path) even though its glob component names nothing.
+	// A relative pattern whose first component globs enumerates the cwd itself.
+	const cwdReal = resolveReal(cwd, cwd);
+	const prefixText = (absolute ? "/" : "") + components.slice(0, firstGlob).join("/");
+	const prefixReal = prefixText === "/" ? "/" : prefixText === "" ? cwdReal : resolveReal(prefixText, cwd);
+	if (prefixReal === "/") return { deny: `${pattern} matches under the filesystem root` };
+	for (const root of SYSTEM_ROOTS) {
+		if (isUnder(prefixReal, root)) return { deny: `${pattern} matches under a system path (${root})` };
+	}
+	const homeReal = process.env.HOME ? resolveReal(process.env.HOME, cwd) : "";
+	if (homeReal && prefixReal === homeReal) return { deny: `${pattern} matches the whole home directory` };
+	const tmpReal = resolveReal("/tmp", cwd);
+	if (!(isUnder(prefixReal, cwdReal) || isUnder(prefixReal, tmpReal) || prefixReal === cwdReal || prefixReal === tmpReal)) {
+		return { defer: `${pattern} matches outside the session and /tmp` };
+	}
+
+	// Every globbed component must contain at least one alphanumeric, `_`, or
+	// `-` character, so `rm -rf *`, `rm -rf dist/*`, and dot-only shapes like
+	// `.*` still defer.
+	for (let i = firstGlob; i < components.length; i++) {
+		if (!/[a-zA-Z0-9_-]/.test(components[i].replace(/\*|\?/g, ""))) {
+			return { defer: `unbounded glob pattern: ${pattern}` };
+		}
+	}
+
+	// Breadth-first expansion from the resolved prefix. A literal component must
+	// exist (realpath) or its branch dies; a glob component enumerates entries.
+	let current: string[] = [prefixReal === "/" ? "/" : prefixReal];
+	for (let i = firstGlob; i < components.length; i++) {
+		const component = components[i];
+		// A ".." component after a glob is rejected above by the unbounded check
+		// (it has no literal character), so only literal/glob components remain:
+		// matches are always inside the resolved prefix directory tree.
+		if (!hasGlobChars(component)) {
+			const next: string[] = [];
+			for (const dir of current) {
+				try {
+					next.push(realpathSync(path.join(dir, component)));
+				} catch {
+					// component does not exist: no matches down this branch
+				}
+			}
+			current = next;
+			continue;
+		}
+		const regex = globComponentToRegex(component);
+		const allowDotfiles = component.startsWith(".");
+		const next: string[] = [];
+		for (const dir of current) {
+			let entries: string[];
+			try {
+				entries = readdirSync(dir);
+			} catch {
+				continue; // not a directory (or gone): no matches down this branch
+			}
+			for (const entry of entries) {
+				if (!allowDotfiles && entry.startsWith(".")) continue;
+				if (regex.test(entry)) next.push(path.join(dir, entry));
+			}
+		}
+		current = next;
+		if (current.length > GLOB_MATCH_CAP) {
+			return { defer: `${pattern} expands to more than ${GLOB_MATCH_CAP} paths` };
+		}
+	}
+	return { matches: current.filter((p) => p !== "/") };
 }
 
 export interface ScopeVerdict {
@@ -560,7 +676,8 @@ export function isTargetInScope(targets: string[], cwd: string, tmpReal: string)
 /**
  * Static gate with a three-way verdict: "absent" (no recursive rm — pi's normal
  * flow applies), "defer" (recursive rm present but not judgeable — human), or
- * "eligible" (literal targets inside cwd//tmp — decision model may approve).
+ * "eligible" (targets — literal or glob-expanded — inside cwd//tmp — decision
+ * model may approve).
  */
 export type CommandVerdict =
 	| { kind: "absent" }
@@ -578,6 +695,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	let sawRecursive = false;
 	let sawPlainRm = false;
 	let rmDeferred = false;
+	let sawGlobTarget = false;
 	let reason = "";
 	const vars = literalAssignments(segments);
 	const targets: string[] = [];
@@ -601,6 +719,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 			const verdict = analyzeSegment(segment, home, vars);
 			if ("targets" in verdict) {
 				sawRecursive = true;
+				if (verdict.targets.some((t) => t.includes("*") || t.includes("?"))) sawGlobTarget = true;
 				targets.push(...verdict.targets);
 			} else if (verdict.defer === "rm without a recursive flag") {
 				sawPlainRm = true;
@@ -630,12 +749,33 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 
 	if (!sawRecursive && !rmDeferred) return { kind: "absent" };
 	if (rmDeferred || sawPlainRm) return { kind: "defer", reason: reason || "mixed recursive and non-recursive rm" };
+	// TOCTOU across segments: a prior segment (ln -s /etc /tmp/d/a.txt) can
+	// create a target the glob follows when bash re-expands at execution time,
+	// after this gate's expansion saw nothing (or an in-scope tree). A glob rm
+	// in a multi-segment command therefore defers; single-segment glob rm keeps
+	// the expansion-based judgment.
+	if (sawGlobTarget && segments.length > 1) {
+		return { kind: "defer", reason: "glob rm alongside other segments — a prior segment could create a target the glob follows at execution time" };
+	}
 
 	const tmpReal = resolveReal("/tmp", cwd);
-	const scope = isTargetInScope(targets, cwd, tmpReal);
+	// Expand glob targets before the scope check so every path the shell would
+	// hand to rm is judged; literal targets pass through unchanged.
+	const expandedTargets: string[] = [];
+	for (const target of targets) {
+		if (!hasGlobChars(target)) {
+			expandedTargets.push(target);
+			continue;
+		}
+		const glob = expandGlobTarget(target, cwd);
+		if ("defer" in glob) return { kind: "defer", reason: glob.defer };
+		if ("deny" in glob) return { kind: "deny", reason: glob.deny };
+		expandedTargets.push(...glob.matches);
+	}
+	const scope = isTargetInScope(expandedTargets, cwd, tmpReal);
 	if (scope.denied) return { kind: "deny", reason: scope.reason };
 	if (!scope.inScope) return { kind: "defer", reason: scope.reason };
-	return { kind: "eligible", targets };
+	return { kind: "eligible", targets: expandedTargets };
 }
 
 /**
