@@ -168,7 +168,7 @@ test("glob rm in a multi-segment command defers (prior segment could create a sy
 	defer("ln -s /etc /tmp/d/a.txt && rm -rf /tmp/d/a.txt/*");
 	defer("mkdir -p /tmp/d && rm -rf /tmp/d/*");
 	// single-segment glob rm is unaffected
-	assert.equal(eligible("rm -rf /tmp/rmguard-tmp-" + process.pid + "/build-123").kind, "eligible");
+	assert.equal(eligible("rm -rf /tmp/rmguard-tmp-" + process.pid + "/build-12?").kind, "eligible");
 });
 
 test("out-of-scope literal prefix defers even with zero matches", () => {
@@ -186,6 +186,12 @@ test("literal component after a glob resolves to the targeted files", () => {
 		kind: "eligible",
 		targets: [`${proj}/node_modules/cache-a/package.json`],
 	});
+});
+
+test("glob match resolving to a regular file with a further glob component yields no matches", () => {
+	// cache-a/package.json is a file; enumerating it hits the readdir catch
+	const verdict = eligible("rm -rf node_modules/cach*/package.json/inner*");
+	assert.deepEqual(verdict, { kind: "eligible", targets: [] });
 });
 
 test("benign non-rm segments pass through with the judged rm", () => {
