@@ -145,7 +145,7 @@ export function createClassifierBackend(
 			: {
 					safe: {
 						type: "bool" as const,
-						instructions: "Did the user ask the agent to delete these paths?",
+						instructions: "Is this deletion generally safe within the verified scope?",
 						criteria: { true: BOOL_CRITERIA_TRUE, false: BOOL_CRITERIA_FALSE },
 					},
 				};
