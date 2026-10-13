@@ -56,9 +56,12 @@
   expansion, scope, and the decision model all apply.
 - An unterminated heredoc defers: the gate cannot know where the body ends, so
   it cannot prove the rest of the command is the only executable part.
-- Known narrowing (under discussion, not yet changed): a quoted body fed to an
-  interpreter (`bash <<'EOF'`, `source /dev/stdin`) executes as shell while the
-  gate treats it as data.
+- Known narrowing (accepted risk, maintainer decision 2026-10-13): a quoted
+  body fed to an interpreter (`bash <<'EOF'`, `source /dev/stdin`) executes as
+  shell while the gate treats it as data — running an evaluated `rm` inside a
+  heredoc consumed by an interpreter is an unusual enough shape that consumer
+  whitelisting/deferral was judged not worth the false-positive cost for this
+  extension's scope.
 - A command substitution inside a double-quoted segment executes in bash, so
   the segment is not strippable: an rm mention in it defers ("unbalanced
   quoting around an rm mention"); benign quoted substitutions and quoted rm
