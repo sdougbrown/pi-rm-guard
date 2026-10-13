@@ -369,10 +369,16 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 		// cannot verify (sudo, env prefix, xargs). A quoted "rm -rf" is stripped
 		// before this point and ignored. rm inside a substitution executes.
 		// Exception: `git rm --cached` only unstages — the files stay on disk,
-		// so the segment is inert for the gate. `git rm` without --cached does
-		// delete from disk and still defers.
+		// so the segment is inert for the gate — but only when the segment
+		// carries no rm of its own: a substitution inside it still executes
+		// (`git rm --cached foo $(rm -rf /tmp/x)`), and `git rm` without
+		// --cached does delete from disk and still defers.
 		const segTokens = remainder.trim().split(/\s+/).filter(Boolean);
-		if (segTokens[0] === "git" && segTokens[1] === "rm" && segTokens.some((t) => t === "--cached")) {
+		const inertGitRmCached =
+			segTokens[0] === "git" && segTokens[1] === "rm" && segTokens.some((t) => t === "--cached");
+		// the "rm" subcommand token is part of `git rm`, so scan only what follows it
+		const restWithoutGitRm = segTokens.slice(2).join(" ");
+		if (inertGitRmCached && inners.length === 0 && !hasRmToken(restWithoutGitRm)) {
 			continue;
 		}
 		if (hasRmToken(remainder)) {

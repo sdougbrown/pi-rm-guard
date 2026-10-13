@@ -179,3 +179,9 @@ test("git rm without --cached deletes from disk and still defers", () => {
 	defer("git rm -rf dist");
 	defer("git rm -r build/");
 });
+
+test("git rm --cached carve-out never hides an rm inside a substitution", () => {
+	defer("git rm --cached foo $(rm -rf /tmp/x)");
+	defer("git rm --cached $(rm -rf $HOME)");
+	defer('git rm --cached `rm -rf ~`');
+});
