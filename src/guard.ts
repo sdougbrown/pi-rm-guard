@@ -257,6 +257,7 @@ function parseHeredocDelim(line: string, i: number): { text: string; stripTabs: 
 		}
 		if (c === "\\" && j + 1 < line.length) {
 			delim += line[j + 1];
+			sawQuote = true; // a backslash-quoted delimiter is quoted: bash does not expand its body
 			j += 2;
 			continue;
 		}
@@ -302,10 +303,6 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 	const out: string[] = [];
 	const pending: { text: string; stripTabs: boolean; quoted: boolean; unmatched?: boolean }[] = [];
 	const contexts: { type: "arith" | "test" | "subst" | "case"; depth: number; kind?: "paren" | "bracket"; brackets?: number; simple?: boolean }[] = [];
-	// open substitution balance across an unquoted body's passed-through lines:
-	// bash expands substitutions that span body lines, so those lines must be
-	// judged too (over-judgment is the safe direction)
-	let bodySubDepth = 0;
 	// quote state carries across lines: a << inside a multi-line quoted string
 	// is shell text, and only carried state can see that
 	let quote: string | null = null;
@@ -318,16 +315,20 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 			const first = pending[0];
 			const candidate = first.stripTabs ? line.replace(/^\t+/, "") : line;
 			if (candidate === first.text && !first.unmatched) pending.shift();
-			else if (!first.quoted && !first.unmatched && (bodySubDepth > 0 || /\$\(|\$\{|`/.test(line))) {
-				out.push(line);
-				for (let k = 0; k < line.length; k++) {
-					if (line[k] === "(") bodySubDepth++;
-					else if (line[k] === ")" && bodySubDepth > 0) bodySubDepth--;
-				}
+			else if (!first.quoted && !first.unmatched && /\$\(|\$\{|`/.test(line)) {
+				// a substitution in an unquoted body expands in bash; a quote-blind
+				// paren balance cannot tell where a multi-line one ends (a ) inside
+				// quotes undercounts and would swallow the expanded lines), so any
+				// substitution in an unquoted body defers the command — the safe
+				// direction
+				return { command, unterminated: true };
 			}
 			continue;
 		}
 		let result = "";
+		// a ) that no tracked context consumed closed a subshell or brace: in bash
+		// a # right after it is a comment start (unlike a # glued after $(..))
+		let parenBoundary = false;
 		for (let i = 0; i < line.length; i++) {
 			const ch = line[i];
 			const top = contexts[contexts.length - 1];
@@ -411,10 +412,10 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 			// word detection for case/esac: standalone words only
 			const prevBoundary = (i === 0 || !/[A-Za-z0-9_]/.test(line[i - 1])) && quote === null;
 			// an unquoted # at word position starts a comment: bash executes none
-			// of it, so a << after it must not open a heredoc. Not a comment inside
-			// arith/test/case contexts, mid-word (a[b#x], ${v#x}), or after ) —
-			// x=$(hi)# glues the # onto the word, which is not a comment in bash.
-			if (ch === "#" && quote === null && (i === 0 || /[ \t;&|]/.test(line[i - 1])) && (!top || top.type === "subst")) {
+			// of it, so a << after it must not open a heredoc. Word boundary: line
+			// start, a [ \t;&|] character, or a ) that closed a subshell (not a
+			// substitution's own close — x=$(hi)# glues the # onto the word).
+			if (ch === "#" && quote === null && (i === 0 || /[ \t;&|]/.test(line[i - 1]) || parenBoundary) && (!top || top.type === "subst")) {
 				break;
 			}
 			if (ch === "c" && prevBoundary && line.startsWith("case", i) && !/[A-Za-z0-9_]/.test(line[i + 4] ?? "")) {
@@ -538,6 +539,7 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 				}
 				// no delimiter characters: not a usable heredoc; keep scanning
 			}
+		parenBoundary = ch === ")" && (!top || top.type === "case" || top.type === "test");
 			result += ch;
 		}
 		out.push(result);
@@ -640,7 +642,9 @@ const GLOB_MATCH_CAP = 64;
  * by bash, so missing it is safe.
  */
 function globComponentMatches(entry: string, component: string): boolean {
-	const escape = (p: string) => p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+	// . and .* must match newlines (bash globs match newline filenames):
+	// [\s\S] instead of . in both semantics paths
+	const escape = (p: string) => p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[\\s\\S]*").replace(/\?/g, "[\\s\\S]");
 	if (new RegExp(`^${escape(component)}$`, "u").test(entry)) return true; // one code point
 	return new RegExp(`^${escape(Buffer.from(component, "utf8").toString("latin1"))}$`).test(Buffer.from(entry, "utf8").toString("latin1")); // one byte
 }

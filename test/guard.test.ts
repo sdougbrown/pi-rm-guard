@@ -69,6 +69,12 @@ test("bounded globs expand in the gate and are eligible with expanded targets", 
 		`/tmp/rmguard-tmp-${process.pid}/leaf1.log`,
 		`/tmp/rmguard-tmp-${process.pid}/leaf🎯.log`,
 	]);
+	// newline filenames: bash's * and ? match them in every locale, so the
+	// gate's regex must not stop at the newline either ([\s\S] semantics)
+	writeFileSync(path.join(tmpDir, "we\nird.log"), "x");
+	const nlVerdict = run(`rm -rf /tmp/rmguard-tmp-${process.pid}/*.log`);
+	assert.equal(nlVerdict.kind, "eligible");
+	assert.ok(nlVerdict.targets.some((tgt) => tgt.includes("we\nird.log")), `newline filename must be judged: ${JSON.stringify(nlVerdict)}`);
 });
 
 test("multi-? patterns match byte-wise like LC_ALL=C bash, so the escape is judged", () => {
@@ -422,6 +428,9 @@ test("unquoted heredoc bodies expand: substitutions are judged, never swallowed"
 	// multi-line substitutions in unquoted bodies span body lines: each line
 	// of the open substitution is judged, not swallowed
 	defer("cat <<EOF\n$(\nrm -rf /\n)\nEOF");
+	// a ) hiding inside a quoted string of the substitution is why paren
+	// balance cannot decide the end: defer covers the multi-line shape
+	defer("cat <<EOF\n$(echo 'a)b'\nrm -rf /\n)\nEOF");
 	// quoted bodies stay data
 	absent("cat <<'EOF'\n$(rm -rf x)\nEOF");
 	// plain body lines of an unquoted heredoc remain data
@@ -434,8 +443,10 @@ test("an unquoted # starts a comment: << after it never opens a heredoc", () => 
 	// # mid-word or after { is not a comment: the heredoc is real
 	absent("cat <<EOF\nrm -rf x\nEOF");
 	// # after a metacharacter boundary is a comment even when not preceded by
-	// whitespace (true |#, x=$(hi)#)
+	// whitespace (true |#, x=$(hi)#), and after a standalone ) that closed a
+	// subshell — but a # glued after a substitution's ) is part of the word
 	deny("true |# <<EOF\nrm -rf /\nEOF");
+	deny("(true)# <<EOF\nrm -rf /\nEOF");
 	// x=$(hi)# glues the # onto the word in bash: the heredoc is real and the
 	// body line is data (bash does not run the rm)
 	absent("x=$(echo hi)# <<EOF\nrm -rf /\nEOF\necho done");
@@ -493,6 +504,8 @@ test("dollar-quoted delimiters dequote: <<$'EOF' terminates at EOF", () => {
 	// ANSI-C escapes change the word: the gate cannot model them, so the body
 	// never closes here (defer) and the live rm is judged
 	defer("cat <<$'\\x45OF'\nEOF\nrm -rf /\n\\x45OF");
+	// a backslash-quoted delimiter is quoted: bash does not expand its body
+	absent("cat <<E\\OF\n$(rm -rf x)\nEOF");
 	// the outer quote closes with the " right after the dq-substitution's )
 	// — a quoted "<<EOF y" argument after it must not open a heredoc
 	deny('echo "$(x)" "<<EOF y"\nrm -rf /\nEOF');
