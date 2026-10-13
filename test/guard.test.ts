@@ -20,9 +20,12 @@ symlinkSync("/", path.join(proj, "to-root"));
 symlinkSync(path.join(proj, "to-home"), path.join(proj, "to-home-2")); // symlink -> symlink
 
 const eligible = (cmd: string) => analyzeCommand(cmd, proj);
-const defer = (cmd: string) => {
+const defer = (cmd: string, reason?: string) => {
 	const r = analyzeCommand(cmd, proj);
 	assert.equal(r.kind, "defer", `expected defer: ${cmd} -> ${JSON.stringify(r)}`);
+	if (reason !== undefined) {
+		assert.match(String((r as { reason?: string }).reason ?? ""), new RegExp(reason), `expected defer reason ${reason}: ${cmd}`);
+	}
 };
 const deny = (cmd: string) => {
 	const r = analyzeCommand(cmd, proj);
@@ -403,4 +406,16 @@ test("pending queue does not leak past the heredoc consumer", () => {
 
 test("same-line multiple heredocs consume their bodies in order (FIFO)", () => {
 	absent("cat <<A <<B\nfirstA\nA\nfirstB\nB");
+});
+
+test("quote state carries across lines: << inside a multi-line string is not a heredoc", () => {
+	// traced from round-4 review: the per-line quote reset swallowed the real rm line
+	assert.deepEqual(eligible('"a\n<< EOF\nman"\nrm -rf /tmp/victim\nEOF\necho done'), {
+		kind: "eligible",
+		targets: ["/tmp/victim"],
+	});
+});
+
+test("case/esac words inside quotes do not open or close case contexts", () => {
+	absent('echo "the case" <<EOF\nrm -rf /etc\nEOF');
 });

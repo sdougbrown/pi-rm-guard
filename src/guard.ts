@@ -263,6 +263,9 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 	const out: string[] = [];
 	const pending: { text: string; stripTabs: boolean }[] = [];
 	const contexts: { type: "arith" | "test" | "subst" | "case"; depth: number }[] = [];
+	// quote state carries across lines: a << inside a multi-line quoted string
+	// is shell text, and only carried state can see that
+	let quote: string | null = null;
 	for (const line of lines) {
 		if (pending.length > 0) {
 			// this line is heredoc body: it is data, except when it exactly closes
@@ -273,7 +276,6 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 			continue;
 		}
 		let result = "";
-		let quote: string | null = null;
 		for (let i = 0; i < line.length; i++) {
 			const ch = line[i];
 			const top = contexts[contexts.length - 1];
@@ -329,7 +331,7 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 				continue;
 			}
 			// word detection for case/esac: standalone words only
-			const prevBoundary = i === 0 || !/[A-Za-z0-9_]/.test(line[i - 1]);
+			const prevBoundary = (i === 0 || !/[A-Za-z0-9_]/.test(line[i - 1])) && quote === null;
 			if (ch === "c" && prevBoundary && line.startsWith("case", i) && !/[A-Za-z0-9_]/.test(line[i + 4] ?? "")) {
 				contexts.push({ type: "case", depth: 1 });
 				result += "case";
