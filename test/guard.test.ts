@@ -384,6 +384,18 @@ test("heredoc bodies are data, not commands", () => {
 	absent('cat <<A\nrm -rf x\nA\ncat <<\'B\'\nrm -rf /\nB');
 	// <<- strips leading tabs before matching the delimiter
 	absent('cat <<-EOF\n\trm -rf x\n\tEOF');
+	// a # after a nested ) inside a double-quoted substitution is a comment:
+	// the gate must not open a phantom heredoc that swallows the live line
+	defer('echo "$( (true)# <<Q\nrm -rf /\nQ\n)"');
+	// a backslash-quoted ) does not close a substitution: the body defers so
+	// the expanded line is judged, never swallowed
+	defer("bash <<EOF\nx=$(echo a\\)\nrm -rf /\n)\nEOF");
+	// quoted command substitutions execute in bash: the rm inside is judged,
+	// while benign quoted substitutions and quoted rm mentions stay absent
+	defer('echo "$(rm -rf /)"');
+	defer('echo "x$(rm -rf /)y"');
+	absent('echo "$(date)"');
+	absent('git commit -m "see rm -rf docs"');
 	// the delimiter must be a whole line: "xEOF" does not close
 	absent('cat <<EOF\nrm -rf x xEOF\nEOF');
 });

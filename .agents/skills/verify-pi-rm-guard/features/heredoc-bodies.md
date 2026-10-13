@@ -19,8 +19,7 @@
   a `[ \t;&|]` character, or a `)` that closed a subshell or arithmetic group
   (`(true)#`, `((1))#`) — including one nested inside a substitution — while a
   `#` glued after a substitution's own final `)` (`x=$(hi)#`) or after word
-  characters (`(true)x#`) is part of the word in bash, and mid-word `#` never
-  starts one.
+  characters is part of the word in bash, and mid-word `#` never starts one.
 - A double-quoted command substitution's closing `)` does not close the outer
   `"`; consuming the `"` that immediately follows does. A `#` at word position
   inside the substitution is a comment too. A `<<` after untracked nesting
@@ -60,6 +59,11 @@
 - Known narrowing (under discussion, not yet changed): a quoted body fed to an
   interpreter (`bash <<'EOF'`, `source /dev/stdin`) executes as shell while the
   gate treats it as data.
+- A command substitution inside a double-quoted segment executes in bash, so
+  the segment is not strippable: an rm mention in it defers ("unbalanced
+  quoting around an rm mention"); benign quoted substitutions and quoted rm
+  mentions stay absent. This closes a pre-existing gap where `echo
+  "$(rm -rf /)"` was judged absent on every branch.
 - The delimiter must be a whole line (leading tabs allowed for `<<-`); bodies
   accumulate FIFO when a line declares several heredocs.
 

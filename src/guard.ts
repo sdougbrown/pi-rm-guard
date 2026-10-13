@@ -96,9 +96,14 @@ function splitSegments(command: string): string[] {
 function stripQuoted(segment: string): string | null {
 	let out = "";
 	let quote: string | null = null;
+	let quotedSubst = false;
 	for (let i = 0; i < segment.length; i++) {
 		const ch = segment[i];
 		if (quote) {
+			// a command substitution inside double quotes executes in bash; the
+			// flat quote machine cannot keep its content (multi-line substs span
+			// lines), so the caller defers rather than judging a stripped remnant
+			if (quote === '"' && ((ch === "$" && segment[i + 1] === "(") || ch === "`")) quotedSubst = true;
 			if (ch === quote) quote = null;
 			continue;
 		}
@@ -112,7 +117,7 @@ function stripQuoted(segment: string): string | null {
 		}
 		out += ch;
 	}
-	return quote === null ? out : null;
+	return quote === null && !quotedSubst ? out : null;
 }
 
 /** Extract the contents of command substitutions; the remainder has them removed. */
@@ -328,6 +333,9 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 				const quoteFree = !/['"`]/.test(line);
 				if (quoteFree) {
 					for (let k = 0; k < line.length; k++) {
+						// a backslash quotes the next character in bash: \( and \) neither
+						// open nor close a substitution
+						if (line[k] === "\\") { k++; continue; }
 						if (line[k] === "(") bal++;
 						else if (line[k] === ")" && bal > 0) bal--;
 					}
@@ -370,7 +378,7 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 				// an unquoted # at word position inside the substitution is a comment:
 				// bash runs none of the rest of the line (a # glued after ) is part
 				// of a word, as in the main path)
-				if (ch === "#" && (i === 0 || /[ \t;&|]/.test(line[i - 1]))) {
+				if (ch === "#" && (i === 0 || /[ \t;&|]/.test(line[i - 1]) || parenBoundary)) {
 					if (top.simple === false) return { command, unterminated: true };
 					break;
 				}
@@ -857,9 +865,11 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	for (const segment of segments) {
 		const stripped = stripQuoted(segment);
 		if (stripped === null) {
-			// Unbalanced quoting: a quoted "rm -rf" mention is harmless, but we
-			// cannot tell where the quotes end — any rm mention defers.
-			if (hasRmToken(segment)) {
+			// Unbalanced quoting or a quoted command substitution: a quoted "rm -rf"
+			// mention is harmless, but we cannot tell where the quotes end — any rm
+			// mention defers. rm glued inside "$(rm …)" is found after normalizing
+			// the quote/substitution punctuation away.
+			if (hasRmToken(segment.replace(/["'`$()]/g, " "))) {
 				rmDeferred = true;
 				reason = "unbalanced quoting around an rm mention";
 			}
