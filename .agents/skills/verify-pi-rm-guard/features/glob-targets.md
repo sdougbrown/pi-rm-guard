@@ -17,7 +17,9 @@
   root and system trees — even when the glob matches nothing — and for a
   whole-home glob (`~/*`, `$HOME/*`: the glob component at the home level is a
   bare `*`). A subtree glob under home (`~/proj*`, `~/.config/*`) defers via
-  the scope check instead, consistent with its literal counterpart.
+  the scope check instead, consistent with its literal counterpart. A `~user`
+  prefix (bash expands it to that user's real home, out of scope) defers as
+  statically unresolvable — it is never treated as a cwd-relative directory.
 - `?` matches one code point (a UTF-8-locale shell) or one byte (LC_ALL=C —
   where `leaf??*` matches `leaf🎯`); the gate judges the union of both, so a
   file bash could expand under any locale is always in the judged set. A file
