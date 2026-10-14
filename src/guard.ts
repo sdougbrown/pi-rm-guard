@@ -87,6 +87,22 @@ function splitSegments(command: string): string[] {
 }
 
 /** Remove quoted spans (and escaped chars). Returns null on unbalanced quotes. */
+/** Whether every quote opened in the segment is closed (stripQuoted returns null for both this-false and quoted-subst cases; the defer reason needs to tell them apart). */
+function quotesAreBalanced(segment: string): boolean {
+	let quote: string | null = null;
+	for (let i = 0; i < segment.length; i++) {
+		const ch = segment[i];
+		if (quote) {
+			if (quote === '"' && ch === "\\" && i + 1 < segment.length) i++;
+			else if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === "'" || ch === '"') quote = ch;
+		else if (ch === "\\" && i + 1 < segment.length) i++;
+	}
+	return quote === null;
+}
+
 function stripQuoted(segment: string): string | null {
 	let out = "";
 	let quote: string | null = null;
@@ -878,10 +894,14 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 			// Unbalanced quoting or a quoted command substitution: a quoted "rm -rf"
 			// mention is harmless, but we cannot tell where the quotes end — any rm
 			// mention defers. rm glued inside "$(rm …)" is found after normalizing
-			// the quote/substitution punctuation away.
+			// the quote/substitution punctuation away. The reason tells the
+			// approver which of the two held: balanced quotes mean the rm sits in a
+			// substitution bash would execute, not in garbled quoting.
 			if (hasRmToken(segment.replace(/["'`$()]/g, " "))) {
 				rmDeferred = true;
-				reason = "unbalanced quoting around an rm mention";
+				reason = quotesAreBalanced(segment)
+					? "rm inside a quoted command substitution"
+					: "unbalanced quoting around an rm mention";
 			}
 			continue;
 		}

@@ -20,6 +20,10 @@ symlinkSync("/", path.join(proj, "to-root"));
 symlinkSync(path.join(proj, "to-home"), path.join(proj, "to-home-2")); // symlink -> symlink
 
 const run = (cmd: string) => analyzeCommand(cmd, proj);
+const eligible = (cmd: string) => {
+	const r = analyzeCommand(cmd, proj);
+	assert.equal(r.kind, "eligible", `expected eligible: ${cmd} -> ${JSON.stringify(r)}`);
+};
 const defer = (cmd: string, reason?: string) => {
 	const r = analyzeCommand(cmd, proj);
 	assert.equal(r.kind, "defer", `expected defer: ${cmd} -> ${JSON.stringify(r)}`);
@@ -38,12 +42,12 @@ const absent = (cmd: string) => {
 
 test("recursive rm with literal targets under cwd is eligible", () => {
 	assert.deepEqual(run("rm -rf node_modules/.cache"), { kind: "eligible", targets: ["node_modules/.cache"] });
-	assert.equal(run("rm -rf build dist").kind, "eligible");
-	assert.equal(run("rm -fr dist").kind, "eligible");
-	assert.equal(run("rm -Rf ./dist").kind, "eligible");
-	assert.equal(run("/bin/rm -rf dist").kind, "eligible");
-	assert.equal(run("rm --one-file-system -rf dist").kind, "eligible");
-	assert.equal(run("rm -rf -- dist").kind, "eligible");
+	eligible("rm -rf build dist");
+	eligible("rm -fr dist");
+	eligible("rm -Rf ./dist");
+	eligible("/bin/rm -rf dist");
+	eligible("rm --one-file-system -rf dist");
+	eligible("rm -rf -- dist");
 });
 
 test("bounded globs expand in the gate and are eligible with expanded targets", () => {
@@ -248,12 +252,12 @@ test("each glob component matches real entries against the accumulated matches",
 });
 
 test("benign non-rm segments pass through with the judged rm", () => {
-	assert.equal(run("rm -rf dist; echo done").kind, "eligible");
-	assert.equal(run("echo hi && rm -rf dist").kind, "eligible");
+	eligible("rm -rf dist; echo done");
+	eligible("echo hi && rm -rf dist");
 });
 
 test("recursive rm on a /tmp target is eligible", () => {
-	assert.equal(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-123`).kind, "eligible");
+	eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-123`);
 });
 
 test("variable indirection, quotes and substitution defer", () => {
@@ -273,9 +277,9 @@ test("delete-everything glob shapes defer", () => {
 });
 
 test("literal assignments from the same command are substituted", () => {
-	assert.equal(run("WT=/tmp/x; rm -rf $WT").kind, "eligible");
-	assert.equal(run("WT=./dist; rm -rf $WT").kind, "eligible");
-	assert.equal(run("export WT=./dist; rm -rf ${WT}").kind, "eligible");
+	eligible("WT=/tmp/x; rm -rf $WT");
+	eligible("WT=./dist; rm -rf $WT");
+	eligible("export WT=./dist; rm -rf ${WT}");
 });
 
 test("assignment values that cannot be resolved keep the target unresolvable", () => {
