@@ -37,9 +37,6 @@ const absent = (cmd: string) => {
 };
 
 test("recursive rm with literal targets under cwd is eligible", () => {
-	// a ~user prefix expands in bash to that user's real home (out of scope):
-	// the gate cannot judge it statically and must not treat it as cwd-relative
-	defer("rm -rf ~other/build-*");
 	assert.deepEqual(run("rm -rf node_modules/.cache"), { kind: "eligible", targets: ["node_modules/.cache"] });
 	assert.equal(run("rm -rf build dist").kind, "eligible");
 	assert.equal(run("rm -fr dist").kind, "eligible");
@@ -194,11 +191,21 @@ test("a dot-only glob component defers (stricter than 'any literal character')",
 	defer(`rm -rf /tmp/rmguard-tmp-${process.pid}/.*`);
 });
 
+test("a ~user prefix defers: bash expands it to that user's real home", () => {
+	// ~other is out of scope and not statically resolvable; the gate must not
+	// judge it as a cwd-relative directory (zero-match eligible bypass)
+	defer("rm -rf ~other/build-*");
+	defer("rm -rf ~root");
+});
+
 test("glob rm in a multi-segment command defers (prior segment could create a symlink the glob follows)", () => {
 	defer("ln -s /etc /tmp/d/a.txt && rm -rf /tmp/d/a.txt/*");
 	defer("mkdir -p /tmp/d && rm -rf /tmp/d/*");
-	// single-segment glob rm is unaffected
-	assert.equal(run("rm -rf /tmp/rmguard-tmp-" + process.pid + "/build-12?").kind, "eligible");
+	// single-segment glob rm is unaffected: the ? expands to the one real entry
+	assert.deepEqual(run("rm -rf /tmp/rmguard-tmp-" + process.pid + "/build-12?"), {
+		kind: "eligible",
+		targets: [`/tmp/rmguard-tmp-${process.pid}/build-123`],
+	});
 });
 
 test("out-of-scope literal prefix defers even with zero matches", () => {

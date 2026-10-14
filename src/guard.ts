@@ -9,12 +9,6 @@ import path from "node:path";
  * module never widens what it can judge beyond what it expands.
  */
 
-export interface EligibleRm {
-	ok: true;
-	/** rm invocations with their literal, statically-resolved targets */
-	invocations: { command: string; targets: string[] }[];
-}
-
 export type IneligibleRm = { ok: false; reason: string };
 
 const UNRESOLVABLE = new Set(["$", "`", '"', "'", "\\", "*", "?", "[", "<", ">", "(", ")", "{", "}", "!", "&"]);
