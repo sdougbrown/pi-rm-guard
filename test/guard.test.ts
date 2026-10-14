@@ -382,8 +382,12 @@ test("heredoc bodies are data, not commands", () => {
 	defer("rm -rf $CACHE_DIR <<'EOF'\nbody\nEOF");
 	// multiple heredocs, each body data
 	absent('cat <<A\nrm -rf x\nA\ncat <<\'B\'\nrm -rf /\nB');
-	// <<- strips leading tabs before matching the delimiter
-	absent('cat <<-EOF\n\trm -rf x\n\tEOF');
+	// <<- strips leading tabs before matching the delimiter — the <<- vs <<
+	// -EOF contrast is pinned in the "<< -EOF" test; not duplicated here
+	// ACCEPTED RISK (maintainer decision 2026-10-13, heredoc-bodies.md): a
+	// quoted body fed to an interpreter executes while the gate treats it as
+	// data. Pinned so any future tightening is a conscious, visible decision.
+	absent("bash <<'EOF'\nrm -rf /\nEOF");
 	// a # after a nested ) inside a double-quoted substitution is a comment:
 	// the gate must not open a phantom heredoc that swallows the live line
 	defer('echo "$( (true)# <<Q\nrm -rf /\nQ\n)"');
@@ -567,7 +571,9 @@ test("heredoc delimiter may be space-separated from <<", () => {
 
 test("delimiter dequoting: quotes and backslashes in the delimiter are not part of the terminator", () => {
 	absent('cat <<E"OF"\nrm -rf x\nEOF');
-	absent("cat <<E\\OF\nrm -rf x\nEOF");
+	// a backslash-quoted delimiter is quoted: the body is data (with a
+	// substitution in it — the unquoted counterpart of the same shape defers)
+	absent("cat <<E\\OF\n$(rm -rf x)\nEOF");
 });
 
 test("case-context << is copied literally, never a phantom heredoc", () => {
