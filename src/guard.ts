@@ -729,7 +729,13 @@ function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } |
 		if (isUnder(prefixReal, root)) return { deny: `${pattern} matches under a system path (${root})` };
 	}
 	const homeReal = process.env.HOME ? resolveReal(process.env.HOME, cwd) : "";
-	if (homeReal && prefixReal === homeReal) return { deny: `${pattern} matches the whole home directory` };
+	if (homeReal && prefixReal === homeReal) {
+		// ~/* expands to every entry in the home directory; a subpath glob (proj*)
+		// matches only a subtree — both deny as out of scope, and the reason says
+		// which so the session entry does not overclaim
+		const wholeHome = components[firstGlob] === "*";
+		return { deny: `${pattern} matches the ${wholeHome ? "whole home directory" : "home directory"}` };
+	}
 	const tmpReal = resolveReal("/tmp", cwd);
 	if (!(isUnder(prefixReal, cwdReal) || isUnder(prefixReal, tmpReal) || prefixReal === cwdReal || prefixReal === tmpReal)) {
 		return { defer: `${pattern} matches outside the session and /tmp` };
