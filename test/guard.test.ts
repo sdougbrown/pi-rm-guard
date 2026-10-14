@@ -41,6 +41,14 @@ const absent = (cmd: string) => {
 };
 
 test("recursive rm with literal targets under cwd is eligible", () => {
+	// bash quote removal: a fully double-quoted token still expands a
+	// literally-assigned variable (and never tildes)
+	assert.deepEqual(run('RUN_DIR=/tmp/umpire-verify-rundir; rm -rf "$RUN_DIR"'), {
+		kind: "eligible",
+		targets: ["/tmp/umpire-verify-rundir"],
+	});
+	// a command-substitution-assigned value exists only at runtime: defer
+	defer('RUN_DIR="$(cat /tmp/umpire-verify-rundir)"\nrm -rf "$RUN_DIR"');
 	assert.deepEqual(run("rm -rf node_modules/.cache"), { kind: "eligible", targets: ["node_modules/.cache"] });
 	eligible("rm -rf build dist");
 	eligible("rm -fr dist");

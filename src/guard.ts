@@ -634,13 +634,23 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 			if (isRecursiveFlag(token)) sawRecursive = true;
 			continue;
 		}
-		const expanded = expandTilde(token, home);
-		// expandTilde handles ~ and ~/...; a ~user prefix expands (in bash) to
-		// that user's home — real and out of scope, so it cannot be judged here
-		if (expanded.startsWith("~")) {
-			return { defer: `target is not statically resolvable: ${token}` };
+		// bash quote removal: a fully double-quoted token still expands $vars
+		// but never tildes ("~" is a literal tilde-named path); a single-quoted
+		// token expands nothing (left unstripped — its expansion characters keep
+		// it in the defer path, the conservative direction)
+		let expansion = token;
+		const fullyDoubleQuoted = token.length >= 2 && token[0] === '"' && token[token.length - 1] === '"';
+		if (fullyDoubleQuoted) expansion = token.slice(1, -1);
+		if (!fullyDoubleQuoted) {
+			const tilde = expandTilde(expansion, home);
+			// expandTilde handles ~ and ~/...; a ~user prefix expands (in bash) to
+			// that user's home — real and out of scope, so it cannot be judged here
+			if (tilde.startsWith("~")) {
+				return { defer: `target is not statically resolvable: ${token}` };
+			}
+			expansion = tilde;
 		}
-		const substituted = substituteVars(expanded, vars, home);
+		const substituted = substituteVars(expansion, vars, home);
 		// Glob characters are allowed in targets: expandGlobTarget expands them
 		// against the real filesystem before the scope check. Everything else
 		// unresolvable still defers.
