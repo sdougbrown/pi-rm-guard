@@ -1,6 +1,6 @@
 {
   "name": "@dougbots/pi-rm-guard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi extension: auto-approves safe recursive rm commands via a decision model, defers everything else to human approval",
   "type": "module",
   "keywords": [
