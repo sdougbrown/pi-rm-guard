@@ -320,10 +320,11 @@ function stripHeredocBodies(command: string): { command: string; unterminated: b
 			const first = pending[0];
 			const candidate = first.stripTabs ? line.replace(/^\t+/, "") : line;
 			if (candidate === first.text && !first.unmatched) pending.shift();
-			else if (!first.quoted && !first.unmatched && /\$\(|\$\{|`/.test(line)) {
-				// a substitution in an unquoted body expands in bash. Pass the line
-				// through for judgment only when it cannot hide a closing paren
-				// inside quotes (no quote chars at all) and its paren balance closes
+			else if (!first.quoted && !first.unmatched && /\$\(|`/.test(line)) {
+				// a command substitution in an unquoted body executes in bash. Pass
+				// the line through for judgment only when it cannot hide a closing
+				// paren inside quotes (no quote chars at all) and its paren balance
+				// closes
 				// on the line; anything else defers (a quote-blind balance
 				// undercounts — e.g. "$(echo 'a)b')" — and would swallow the lines
 				// bash expanded). Single-line, quote-free substitutions are the

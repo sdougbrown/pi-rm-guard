@@ -454,8 +454,13 @@ test("unquoted heredoc bodies expand: substitutions are judged, never swallowed"
 	defer("cat <<EOF\n$(echo 'a)b'\nrm -rf /\n)\nEOF");
 	// quoted bodies stay data
 	absent("cat <<'EOF'\n$(rm -rf x)\nEOF");
-	// plain body lines of an unquoted heredoc remain data
+	// plain body lines of an unquoted heredoc remain data; parameter expansions
+	// (${VAR}, $VAR) expand into data for the consuming command and never run
+	// as commands — only command substitutions ($(..), backticks) are judged
 	absent("cat <<EOF\nrm -rf x\nEOF");
+	absent("cat <<EOF\nrm -rf ${DIR}\nEOF");
+	defer("cat <<EOF\n$(rm -rf /)\nEOF");
+	defer("cat <<EOF\n`rm -rf /`\nEOF");
 });
 
 test("an unquoted # starts a comment: << after it never opens a heredoc", () => {

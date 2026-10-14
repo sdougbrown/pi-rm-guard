@@ -7,12 +7,14 @@
   executed as shell. This removes two real-world false positives: "unbalanced
   quoting around an rm mention" and "rm is not in leading position" on plain
   `git commit -m "$(cat <<'EOF'...)"` calls.
-- An UNQUOTED delimiter means bash expands the body: a substitution
-  (`$(...)`, `${...}`, backtick) in an unquoted body is passed through and
-  judged when the line is quote-free with balanced parens (the common
-  commit-message and template shapes) and defers the whole command otherwise —
-  a quote-blind paren balance undercounts when a `)` hides inside a quoted
-  string, so no expansion lines are ever swallowed. Quoted bodies stay data.
+- An UNQUOTED delimiter means bash expands the body: a command substitution
+  (`$(...)`, backtick) in an unquoted body is passed through and judged when
+  the line is quote-free with balanced parens (the common commit-message and
+  template shapes) and defers the whole command otherwise — a quote-blind
+  paren balance undercounts when a `)` hides inside a quoted string, so no
+  expansion lines are ever swallowed. Parameter expansions (`${VAR}`, `$VAR`)
+  expand into data for the consuming command and never run as commands, so
+  their lines stay data. Quoted bodies stay data.
 - An unquoted `#` at word position starts a comment: operator detection stops
   there for the line, so `echo hi # <<EOF` cannot open a phantom heredoc that
   swallows a live command on a body-position line. Word position: line start,
