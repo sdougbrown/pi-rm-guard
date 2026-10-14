@@ -119,6 +119,9 @@ expectation_for() {
 		deny|deny-root)   echo "SURVIVED|gate=denied|0" ;;
 		defer|defer-glob|defer-var|glob-unbounded) echo "SURVIVED|gate=ineligible|0" ;;
 		absent)           echo "DELETED|absent|0" ;;
+		heredoc-mention)  echo "SURVIVED|absent|0" ;;
+		arith-shift)      echo "DELETED|action=approve autoApproved=true|1" ;;
+		heredoc-delete)   echo "DELETED|action=approve autoApproved=true|1" ;;
 		glob-approved)    echo "SURVIVED|action=approve autoApproved=true targets=[]|1" ;;
 		glob-real)        echo "DELETED|action=approve autoApproved=true targets=+|1" ;;
 		*)                echo "" ;;

@@ -21,10 +21,10 @@
   prefix (bash expands it to that user's real home, out of scope) defers as
   statically unresolvable — it is never treated as a cwd-relative directory.
 - `?` matches one code point (a UTF-8-locale shell) or one byte (LC_ALL=C —
-  where `leaf??*` matches `leaf🎯`); the gate judges the union of both, so a
-  file bash could expand under any locale is always in the judged set. A file
-  matched under neither semantics is never expanded by bash, so missing it is
-  safe.
+  where `leaf??*` matches `leaf🎯`); the gate judges the union of both, and
+  both semantics match newline filenames (`[\s\S]`, since bash globs match
+  `a\nb`). A file matched under neither semantics is never expanded by bash,
+  so missing it is safe.
 - Symlink matches are resolved physically (per component) and caught by the
   normal scope checks: a match pointing outside cwd//tmp denies, like the same
   path as a literal target.

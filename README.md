@@ -27,7 +27,12 @@ literal targets:
   shapes like `.*` defer), and expansion past 64 matches defers. A glob anchored under a system path (`/etc/foo*`) denies even
   when it matches nothing. Known limit: rm re-globs at execution, so a file
   created in the checked directory between the check and the rm run is deleted
-  too — the pattern's directories are always literal, in-scope paths.
+  too — the pattern's directories are always literal, in-scope paths, and a
+  glob rm in a multi-segment command defers outright (see below).
+- **Heredoc bodies are data** — an rm mention inside a heredoc (`<<'EOF'`,
+  `<<EOF`, `<<-EOF`, including inside a double-quoted command substitution) is
+  never executed as shell, so it is absent from the gate; a real rm beside a
+  heredoc is still judged; an unterminated heredoc defers.
 - **Scope** — every target must resolve (physically, per component) inside the
   session cwd or `/tmp`. Symlinks are followed during resolution, so a link
   inside the project pointing at `$HOME/.ssh` defers, and `link/../etc` cannot

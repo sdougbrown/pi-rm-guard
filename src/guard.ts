@@ -87,12 +87,33 @@ function splitSegments(command: string): string[] {
 }
 
 /** Remove quoted spans (and escaped chars). Returns null on unbalanced quotes. */
-function stripQuoted(segment: string): string | null {
-	let out = "";
+/** Whether every quote opened in the segment is closed (stripQuoted returns null for both this-false and quoted-subst cases; the defer reason needs to tell them apart). */
+function quotesAreBalanced(segment: string): boolean {
 	let quote: string | null = null;
 	for (let i = 0; i < segment.length; i++) {
 		const ch = segment[i];
 		if (quote) {
+			if (quote === '"' && ch === "\\" && i + 1 < segment.length) i++;
+			else if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === "'" || ch === '"') quote = ch;
+		else if (ch === "\\" && i + 1 < segment.length) i++;
+	}
+	return quote === null;
+}
+
+function stripQuoted(segment: string): string | null {
+	let out = "";
+	let quote: string | null = null;
+	let quotedSubst = false;
+	for (let i = 0; i < segment.length; i++) {
+		const ch = segment[i];
+		if (quote) {
+			// a command substitution inside double quotes executes in bash; the
+			// flat quote machine cannot keep its content (multi-line substs span
+			// lines), so the caller defers rather than judging a stripped remnant
+			if (quote === '"' && ((ch === "$" && segment[i + 1] === "(") || ch === "`")) quotedSubst = true;
 			if (ch === quote) quote = null;
 			continue;
 		}
@@ -106,7 +127,7 @@ function stripQuoted(segment: string): string | null {
 		}
 		out += ch;
 	}
-	return quote === null ? out : null;
+	return quote === null && !quotedSubst ? out : null;
 }
 
 /** Extract the contents of command substitutions; the remainder has them removed. */
@@ -193,6 +214,396 @@ function expandTilde(target: string, home: string): string {
 	if (target === "~") return home;
 	if (target.startsWith("~/")) return path.join(home, target.slice(2));
 	return target;
+}
+
+/**
+ * Parse the delimiter spec at line[i] ("<<", optional immediate "-", dequoting
+ * quotes and backslashes per bash); null when not a usable heredoc.
+ *
+ * The unquoted delimiter word is a shell word: it runs until whitespace or a
+ * metacharacter (`;|&<>()`), so `<<EOF-x` and `<<E.OF` are single words even
+ * though the characters are outside [A-Za-z0-9_]. The <<- tab-strip flag only
+ * applies when the dash immediately follows `<<` — with whitespace in between
+ * (`<< -EOF`) the dash is part of the word (both verified against bash).
+ *
+ * A word ending in a line-continuation backslash (`cat <<E\` + `OF`) extends
+ * across lines, which this per-line parser cannot model. Return null in that
+ * case: the body is then scanned as live shell text and over-judged (the safe
+ * direction) instead of the body being terminated early by a wrong shorter
+ * word while bash keeps consuming it.
+ */
+function parseHeredocDelim(line: string, i: number): { text: string; stripTabs: boolean; end: number; quoted: boolean; unmatched?: boolean } | null {
+	let j = i + 2;
+	const stripTabs = line[j] === "-";
+	if (stripTabs) j++;
+	else while (line[j] === " " || line[j] === "\t") j++;
+	while (line[j] === " " || line[j] === "\t") j++;
+	let delim = "";
+	let delimQuote: string | null = null;
+	let sawQuote = false;
+	let dollarSingle = false;
+	// dollar-quotes dequote to the quoted word: bash's delimiter for <<$'EOF'
+	// and <<$"EOF" is EOF
+	if (line[j] === "$" && (line[j + 1] === "'" || line[j + 1] === '"')) {
+		j++;
+		delimQuote = line[j];
+		sawQuote = true;
+		dollarSingle = line[j] === "'";
+		j++;
+	}
+	while (j < line.length) {
+		const c = line[j];
+		if (delimQuote) {
+			if (c === delimQuote) {
+				delimQuote = null;
+				j++;
+				continue;
+			}
+			// inside a double-quoted delimiter bash processes backslash escapes
+			// ("E\$OF" → E$OF); single quotes have none
+			if (delimQuote === '"' && c === "\\" && j + 1 < line.length) {
+				delim += line[j + 1];
+				j += 2;
+				continue;
+			}
+			delim += c;
+			j++;
+			continue;
+		}
+		if (c === "\\" && j + 1 < line.length) {
+			delim += line[j + 1];
+			sawQuote = true; // a backslash-quoted delimiter is quoted: bash does not expand its body
+			j += 2;
+			continue;
+		}
+		if (c === "\\" && j + 1 === line.length) return null; // line continuation: word spans lines, unmodelable here
+		if (c === "'" || c === '"') {
+			delimQuote = c;
+			sawQuote = true;
+			j++;
+			continue;
+		}
+		// shell word: any character except whitespace and metacharacters
+		if (/[ \t|&;()<>]/.test(c)) break;
+		delim += c;
+		j++;
+	}
+	if (delim.length === 0 && !sawQuote) return null;
+	// ANSI-C escapes ($'\x45') dequote to other characters; the per-line parser
+	// does not model them, so the body never closes here (defer) instead of
+	// terminating at a wrong line while bash keeps consuming the body
+	if (dollarSingle && delim.includes("\\")) return { text: "", stripTabs, end: j, quoted: true, unmatched: true };
+	// an empty quoted delimiter (<<'') is real: bash's body ends at the empty
+	// line; returning null would reparse the body as live shell text
+	return { text: delim, stripTabs, end: j, quoted: sawQuote || delimQuote !== null };
+}
+
+/**
+ * Remove heredoc bodies from the command: a heredoc body is input data for the
+ * consuming command, never executed as shell, so an rm mention inside it is
+ * not a command to judge (this is what produced the "unbalanced quoting
+ * around an rm mention" and "rm is not in leading position" defers on plain
+ * `git commit` heredocs). Returns unterminated=true when the command opens a
+ * heredoc whose delimiter line never appears — the gate cannot know where the
+ * body ends, so the caller must defer. The delimiter must be a whole line
+ * (leading tabs allowed for <<-), and bodies accumulate in FIFO order when a
+ * line declares several heredocs. `<<` inside arithmetic ($((..)), ((..)),
+ * $[..]) and test ([[..]]) contexts is a left shift, not a heredoc, so
+ * operator detection is skipped there; case patterns and =~ are not tracked
+ * because heredocs are legal inside case bodies, and a << in a case pattern
+ * is pathological.
+ */
+function stripHeredocBodies(command: string): { command: string; unterminated: boolean } {
+	const lines = command.split("\n");
+	const out: string[] = [];
+	const pending: { text: string; stripTabs: boolean; quoted: boolean; unmatched?: boolean }[] = [];
+	const contexts: { type: "arith" | "test" | "subst" | "case"; depth: number; kind?: "paren" | "bracket"; brackets?: number; simple?: boolean; nested?: boolean }[] = [];
+	// quote state carries across lines: a << inside a multi-line quoted string
+	// is shell text, and only carried state can see that
+	let quote: string | null = null;
+	for (const line of lines) {
+		if (pending.length > 0) {
+			// this line is heredoc body: it is data, except when it exactly closes
+			// the oldest open heredoc. An UNQUOTED delimiter means bash expands
+			// the body: substitution-bearing lines are passed through to be judged
+			// (the safe direction — an rm inside them must not vanish from the gate)
+			const first = pending[0];
+			const candidate = first.stripTabs ? line.replace(/^\t+/, "") : line;
+			if (candidate === first.text && !first.unmatched) pending.shift();
+			else if (!first.quoted && !first.unmatched && /\$\(|`/.test(line)) {
+				// a command substitution in an unquoted body executes in bash. Pass
+				// the line through for judgment only when it cannot hide a closing
+				// paren inside quotes (no quote chars at all) and its paren balance
+				// closes
+				// on the line; anything else defers (a quote-blind balance
+				// undercounts — e.g. "$(echo 'a)b')" — and would swallow the lines
+				// bash expanded). Single-line, quote-free substitutions are the
+				// common real-world shapes (commit messages, templates) and stay
+				// judgeable instead of always punting to the human.
+				let bal = 0;
+				const quoteFree = !/['"`]/.test(line);
+				if (quoteFree) {
+					for (let k = 0; k < line.length; k++) {
+						// a backslash quotes the next character in bash: \( and \) neither
+						// open nor close a substitution
+						if (line[k] === "\\") { k++; continue; }
+						if (line[k] === "(") bal++;
+						else if (line[k] === ")" && bal > 0) bal--;
+					}
+				}
+				if (quoteFree && bal === 0) out.push(line);
+				else return { command, unterminated: true };
+			}
+			continue;
+		}
+		let result = "";
+		// a ) that no tracked context consumed closed a subshell or brace: in bash
+		// a # right after it is a comment start (unlike a # glued after $(..))
+		let parenBoundary = false;
+		for (let i = 0; i < line.length; i++) {
+			const ch = line[i];
+			const top = contexts[contexts.length - 1];
+			// for a safety gate, a << inside a case body must not silently open a
+			// heredoc (a case pattern like *<<2* is shell text, and a phantom body
+			// would swallow real commands) — it is copied literally instead, which
+			// makes a genuine heredoc-in-case-body defer (safe direction)
+			if (top && top.type === "case" && ch === "<" && line[i + 1] === "<") {
+				result += ch;
+				continue;
+			}
+			// bash: inside "$( ... )" the outer double quote does not close until
+			// after the matching ")", and heredocs nested there are real
+			const inDqSubst = quote === '"' && top !== undefined && top.type === "subst";
+			if (inDqSubst) {
+				if (ch === "\\" && i + 1 < line.length) {
+					// subst content is re-parsed as shell: escapes apply inside it
+					result += ch + line[i + 1];
+					i++;
+					continue;
+				}
+				// quotes, brackets, backticks and a standalone case word inside the
+				// substitution are nested structure this path does not fully track:
+				// a << after one must not open a heredoc (bash-literal << there is
+				// text) — defer instead
+				if (ch === "'" || ch === '"' || ch === "[" || ch === "`" || (ch === "c" && (i === 0 || /[ \t;&(|]/.test(line[i - 1])) && line.startsWith("case", i) && !/[A-Za-z0-9_]/.test(line[i + 4] ?? ""))) top.simple = false;
+				// an unquoted # at word position inside the substitution is a comment:
+				// bash runs none of the rest of the line (a # glued after ) is part
+				// of a word, as in the main path)
+				if (ch === "#" && (i === 0 || /[ \t;&|]/.test(line[i - 1]) || parenBoundary)) {
+					if (top.simple === false) return { command, unterminated: true };
+					break;
+				}
+				if (ch === "(") {
+					top.depth++;
+					// nested (( (compound/arithmetic) inside the substitution is not
+					// tracked here: a << after it must not open a heredoc
+					if (line[i + 1] === "(") top.simple = false;
+					if (top.depth === 2 && line[i - 1] === "(" && line[i - 2] === "$") top.type = "arith";
+					result += ch;
+					continue;
+				}
+				if (ch === ")") {
+					parenBoundary = top.depth > 1; // nested close inside "…$(…)"; over-boundary is the safe direction
+					top.depth--;
+					result += ch;
+					if (top.depth === 0) {
+						contexts.pop();
+						// the outer double quote stays open across the closing `)`:
+						// bash does not close it until the actual `"`. Consuming that
+						// `"` here IS the close — leaving quote set would treat a later
+						// quoted argument ("<<EOF y") as unquoted and mis-open heredocs
+						if (line[i + 1] === '"') {
+							result += '"';
+							i++;
+							quote = null;
+						}
+					}
+					continue;
+				}
+				if (ch === "<" && line[i + 1] === "<") {
+					if (line[i + 2] === "<") {
+						result += "<<<";
+						i += 2;
+						continue;
+					}
+					if (top.type === "subst") {
+						if (top.simple === false) return { command, unterminated: true };
+						const delim = parseHeredocDelim(line, i);
+						if (delim) {
+							pending.push({ text: delim.text, stripTabs: delim.stripTabs, quoted: delim.quoted, unmatched: delim.unmatched });
+							i = delim.end - 1;
+							continue;
+						}
+					}
+					result += ch;
+					continue;
+				}
+				result += ch;
+				continue;
+			}
+			// word detection for case/esac: standalone words only
+			const prevBoundary = (i === 0 || !/[A-Za-z0-9_]/.test(line[i - 1])) && quote === null;
+			// an unquoted # at word position starts a comment: bash executes none
+			// of it, so a << after it must not open a heredoc. Word boundary: line
+			// start, a [ \t;&|] character, or a ) that closed a subshell (not a
+			// substitution's own close — x=$(hi)# glues the # onto the word).
+			if (ch === "#" && quote === null && (i === 0 || /[ \t;&|]/.test(line[i - 1]) || parenBoundary) && (!top || top.type === "subst")) {
+				break;
+			}
+			if (ch === "c" && prevBoundary && line.startsWith("case", i) && !/[A-Za-z0-9_]/.test(line[i + 4] ?? "")) {
+				contexts.push({ type: "case", depth: 1 });
+				result += "case";
+				i += 3;
+				continue;
+			}
+			if (ch === "e" && prevBoundary && line.startsWith("esac", i) && !/[A-Za-z0-9_]/.test(line[i + 4] ?? "")) {
+				if (top && top.type === "case") contexts.pop();
+				result += "esac";
+				i += 3;
+				continue;
+			}
+			if (quote === '"' && ch === "$" && line[i + 1] === "(") {
+				contexts.push({ type: "subst", depth: 1, simple: true, nested: false });
+				result += "$(";
+				i++;
+				continue;
+			}
+			if (quote) {
+				// inside double quotes a backslash escapes the next character (a \"
+				// does not close the quote); inside single quotes there are no escapes
+				if (quote === '"' && ch === "\\" && i + 1 < line.length) {
+					result += ch + line[i + 1];
+					parenBoundary = false; // an escaped # is a literal word char
+					i++;
+					continue;
+				}
+				result += ch;
+				if (ch === quote) quote = null;
+				continue;
+			}
+			if (ch === "'" || ch === '"') {
+				quote = ch;
+				result += ch;
+				continue;
+			}
+			if (ch === "\\" && i + 1 < line.length) {
+				result += ch + line[i + 1];
+				i++;
+				continue;
+			}
+			if (ch === "$" && line[i + 1] === "(") {
+				if (line[i + 2] === "(") {
+					contexts.push({ type: "arith", depth: 2, kind: "paren", brackets: 0, nested: false });
+					result += "$((";
+					i += 2;
+					continue;
+				}
+				contexts.push({ type: "subst", depth: 1, simple: true, nested: false });
+				result += "$(";
+				i++;
+				continue;
+			}
+			if (ch === "(" && line[i + 1] === "(") {
+				contexts.push({ type: "arith", depth: 2, kind: "paren", brackets: 0, nested: true });
+				result += "((";
+				i++;
+				continue;
+			}
+			// a bare ( (subshell or group) opens a group: its ) is a word boundary
+			// for a following # comment, unlike the ) closing $( which glues
+			if (ch === "(" && (!top || top.type === "subst")) {
+				contexts.push({ type: "subst", depth: 1, simple: true, nested: true });
+				result += ch;
+				continue;
+			}
+			if (ch === "[" && line[i + 1] === "[") {
+				contexts.push({ type: "test", depth: 2 });
+				result += "[[";
+				i++;
+				continue;
+			}
+			if (ch === "$" && line[i + 1] === "[") {
+				contexts.push({ type: "arith", depth: 1, kind: "bracket", brackets: 0 });
+				result += "$[";
+				i++;
+				continue;
+			}
+			if (top && top.type === "subst" && ch === "(") {
+				top.depth++;
+				result += ch;
+				continue;
+			}
+			if (top && top.type === "subst" && ch === ")") {
+				// a nested group's close leaves a comment boundary; the substitution's
+				// own final ) glues a following # to the word in bash (x=$(hi)#)
+				parenBoundary = top.nested === true;
+				top.depth--;
+				result += ch;
+				if (top.depth === 0) contexts.pop();
+				continue;
+			}
+			if (top && top.type === "arith" && ch === ")" && line[i + 1] === ")") {
+				// ((1))# is a comment; x=$((1))# glues (over-boundary is the safe direction)
+				parenBoundary = top.nested === true;
+				contexts.pop();
+				result += "))";
+				i++;
+				continue;
+			}
+			if (top && top.type === "arith" && ch === "]") {
+				// a ] may close a subscript (a[0]), not the arithmetic context: only
+				// a depth-zero ] closes a $[ ]-style context; ((..)) closes on ))
+				if ((top.brackets ?? 0) > 0) top.brackets--;
+				else if (top.kind === "bracket") contexts.pop();
+				result += ch;
+				continue;
+			}
+			if (top && top.type === "arith" && ch === "[") {
+				top.brackets = (top.brackets ?? 0) + 1;
+				result += ch;
+				continue;
+			}
+			if (top && top.type === "test" && ch === "]" && line[i + 1] === "]") {
+				contexts.pop();
+				result += "]]";
+				i++;
+				continue;
+			}
+			if (ch === "<" && line[i + 1] === "<" && (!top || top.type === "subst")) {
+				if (line[i + 2] === "<") {
+					// here-string: same-line data, not a heredoc
+					result += "<<<";
+					i += 2;
+					continue;
+				}
+				const delim = parseHeredocDelim(line, i);
+				if (delim) {
+					pending.push({ text: delim.text, stripTabs: delim.stripTabs, quoted: delim.quoted, unmatched: delim.unmatched });
+					i = delim.end - 1;
+					continue;
+				}
+				// no delimiter characters: not a usable heredoc; keep scanning
+			}
+		// a ) that closed a group leaves a comment boundary (bash: (true)# hi runs
+		// nothing) — but a word character after it re-glues ((true)x# hi runs hi),
+		// and the ) closing $( glues (x=$(hi)#). Set-only across non-word chars;
+		// the subst/arith handlers set it from the popped context's nested flag.
+		if (ch === ")") parenBoundary = true;
+		else if (/[A-Za-z0-9_]/.test(ch)) parenBoundary = false;
+			result += ch;
+		}
+		out.push(result);
+		// bash joins backslash-newline continuations before body collection: a
+		// heredoc opened on a line ending in a continuation would make the next
+		// line body data when bash executes it as command. Can't model per-line:
+		// defer. (An escaped backslash leaves an even trailing count.)
+		if (pending.length > 0) {
+			let t = line.length;
+			while (t > 0 && line[t - 1] === "\\") t--;
+			if ((line.length - t) % 2 === 1) return { command, unterminated: true };
+		}
+	}
+	return { command: out.join("\n"), unterminated: pending.length > 0 };
 }
 
 /**
@@ -479,7 +890,9 @@ export type CommandVerdict =
 
 export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	const home = process.env.HOME ?? "";
-	const segments = splitSegments(command);
+	const { command: withoutHeredocBodies, unterminated } = stripHeredocBodies(command);
+	if (unterminated) return { kind: "defer", reason: "unterminated heredoc — cannot tell where the body ends" };
+	const segments = splitSegments(withoutHeredocBodies);
 	if (segments.length === 0) return { kind: "defer", reason: "empty command" };
 
 	let sawRecursive = false;
@@ -493,11 +906,17 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	for (const segment of segments) {
 		const stripped = stripQuoted(segment);
 		if (stripped === null) {
-			// Unbalanced quoting: a quoted "rm -rf" mention is harmless, but we
-			// cannot tell where the quotes end — any rm mention defers.
-			if (hasRmToken(segment)) {
+			// Unbalanced quoting or a quoted command substitution: a quoted "rm -rf"
+			// mention is harmless, but we cannot tell where the quotes end — any rm
+			// mention defers. rm glued inside "$(rm …)" is found after normalizing
+			// the quote/substitution punctuation away. The reason tells the
+			// approver which of the two held: balanced quotes mean the rm sits in a
+			// substitution bash would execute, not in garbled quoting.
+			if (hasRmToken(segment.replace(/["'`$()]/g, " "))) {
 				rmDeferred = true;
-				reason = "unbalanced quoting around an rm mention";
+				reason = quotesAreBalanced(segment)
+					? "rm inside a quoted command substitution"
+					: "unbalanced quoting around an rm mention";
 			}
 			continue;
 		}

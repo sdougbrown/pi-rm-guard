@@ -20,9 +20,16 @@ symlinkSync("/", path.join(proj, "to-root"));
 symlinkSync(path.join(proj, "to-home"), path.join(proj, "to-home-2")); // symlink -> symlink
 
 const run = (cmd: string) => analyzeCommand(cmd, proj);
-const defer = (cmd: string) => {
+const eligible = (cmd: string) => {
+	const r = analyzeCommand(cmd, proj);
+	assert.equal(r.kind, "eligible", `expected eligible: ${cmd} -> ${JSON.stringify(r)}`);
+};
+const defer = (cmd: string, reason?: string) => {
 	const r = analyzeCommand(cmd, proj);
 	assert.equal(r.kind, "defer", `expected defer: ${cmd} -> ${JSON.stringify(r)}`);
+	if (reason !== undefined) {
+		assert.match(String((r as { reason?: string }).reason ?? ""), new RegExp(reason), `expected defer reason ${reason}: ${cmd}`);
+	}
 };
 const deny = (cmd: string) => {
 	const r = analyzeCommand(cmd, proj);
@@ -43,12 +50,12 @@ test("recursive rm with literal targets under cwd is eligible", () => {
 	// a command-substitution-assigned value exists only at runtime: defer
 	defer('RUN_DIR="$(cat /tmp/umpire-verify-rundir)"\nrm -rf "$RUN_DIR"');
 	assert.deepEqual(run("rm -rf node_modules/.cache"), { kind: "eligible", targets: ["node_modules/.cache"] });
-	assert.equal(run("rm -rf build dist").kind, "eligible");
-	assert.equal(run("rm -fr dist").kind, "eligible");
-	assert.equal(run("rm -Rf ./dist").kind, "eligible");
-	assert.equal(run("/bin/rm -rf dist").kind, "eligible");
-	assert.equal(run("rm --one-file-system -rf dist").kind, "eligible");
-	assert.equal(run("rm -rf -- dist").kind, "eligible");
+	eligible("rm -rf build dist");
+	eligible("rm -fr dist");
+	eligible("rm -Rf ./dist");
+	eligible("/bin/rm -rf dist");
+	eligible("rm --one-file-system -rf dist");
+	eligible("rm -rf -- dist");
 });
 
 test("bounded globs expand in the gate and are eligible with expanded targets", () => {
@@ -74,6 +81,12 @@ test("bounded globs expand in the gate and are eligible with expanded targets", 
 		`/tmp/rmguard-tmp-${process.pid}/leaf1.log`,
 		`/tmp/rmguard-tmp-${process.pid}/leaf🎯.log`,
 	]);
+	// newline filenames: bash's * and ? match them in every locale, so the
+	// gate's regex must not stop at the newline either ([\s\S] semantics)
+	writeFileSync(path.join(tmpDir, "we\nird.log"), "x");
+	const nlVerdict = run(`rm -rf /tmp/rmguard-tmp-${process.pid}/*.log`);
+	assert.equal(nlVerdict.kind, "eligible");
+	assert.ok(nlVerdict.targets.some((tgt) => tgt.includes("we\nird.log")), `newline filename must be judged: ${JSON.stringify(nlVerdict)}`);
 });
 
 test("multi-? patterns match byte-wise like LC_ALL=C bash, so the escape is judged", () => {
@@ -262,12 +275,12 @@ test("each glob component matches real entries against the accumulated matches",
 });
 
 test("benign non-rm segments pass through with the judged rm", () => {
-	assert.equal(run("rm -rf dist; echo done").kind, "eligible");
-	assert.equal(run("echo hi && rm -rf dist").kind, "eligible");
+	eligible("rm -rf dist; echo done");
+	eligible("echo hi && rm -rf dist");
 });
 
 test("recursive rm on a /tmp target is eligible", () => {
-	assert.equal(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-123`).kind, "eligible");
+	eligible(`rm -rf /tmp/rmguard-tmp-${process.pid}/build-123`);
 });
 
 test("variable indirection, quotes and substitution defer", () => {
@@ -287,9 +300,9 @@ test("delete-everything glob shapes defer", () => {
 });
 
 test("literal assignments from the same command are substituted", () => {
-	assert.equal(run("WT=/tmp/x; rm -rf $WT").kind, "eligible");
-	assert.equal(run("WT=./dist; rm -rf $WT").kind, "eligible");
-	assert.equal(run("export WT=./dist; rm -rf ${WT}").kind, "eligible");
+	eligible("WT=/tmp/x; rm -rf $WT");
+	eligible("WT=./dist; rm -rf $WT");
+	eligible("export WT=./dist; rm -rf ${WT}");
 });
 
 test("assignment values that cannot be resolved keep the target unresolvable", () => {
@@ -393,3 +406,256 @@ test("cleanup", () => {
 	rmSync(path.join(process.env.HOME ?? "/tmp", `.rmguard-test-${process.pid}`), { recursive: true, force: true });
 });
 
+test("heredoc bodies are data, not commands", () => {
+	// rm mention inside a heredoc body never executes as shell
+	absent('git commit -m msg <<\'EOF\'\nrm -rf /\nEOF');
+	absent('git commit -F - <<EOF\nrm -rf /etc\nEOF');
+	absent('cat <<\'EOF\'\nrm -rf x\nEOF\necho done');
+	// a real rm beside a heredoc is still judged
+	assert.deepEqual(run("rm -rf dist <<'EOF'\nanything rm -rf here\nEOF"), {
+		kind: "eligible",
+		targets: ["dist"],
+	});
+	assert.deepEqual(run("rm -rf node_modules/.cache <<'EOF'\nbody\nEOF"), {
+		kind: "eligible",
+		targets: ["node_modules/.cache"],
+	});
+	deny("rm -rf / <<'EOF'\nbody\nEOF");
+	defer("rm -rf $CACHE_DIR <<'EOF'\nbody\nEOF");
+	// multiple heredocs, each body data
+	absent('cat <<A\nrm -rf x\nA\ncat <<\'B\'\nrm -rf /\nB');
+	// <<- strips leading tabs before matching the delimiter — the <<- vs <<
+	// -EOF contrast is pinned in the "<< -EOF" test; not duplicated here
+	// ACCEPTED RISK (maintainer decision 2026-10-13, heredoc-bodies.md): a
+	// quoted body fed to an interpreter executes while the gate treats it as
+	// data. Pinned so any future tightening is a conscious, visible decision.
+	absent("bash <<'EOF'\nrm -rf /\nEOF");
+	// a # after a nested ) inside a double-quoted substitution is a comment:
+	// the gate must not open a phantom heredoc that swallows the live line
+	defer('echo "$( (true)# <<Q\nrm -rf /\nQ\n)"');
+	// a backslash-quoted ) does not close a substitution: the body defers so
+	// the expanded line is judged, never swallowed
+	defer("bash <<EOF\nx=$(echo a\\)\nrm -rf /\n)\nEOF");
+	// quoted command substitutions execute in bash: the rm inside is judged,
+	// while benign quoted substitutions and quoted rm mentions stay absent
+	defer('echo "$(rm -rf /)"');
+	defer('echo "x$(rm -rf /)y"');
+	// the backtick half of the quotedSubst check executes too
+	defer('echo "`rm -rf /`"');
+	absent('echo "$(date)"');
+	absent('git commit -m "see rm -rf docs"');
+	// the delimiter must be a whole line: "xEOF" does not close
+	absent('cat <<EOF\nrm -rf x xEOF\nEOF');
+});
+
+test("unquoted delimiter words run past word characters (bash word grammar)", () => {
+	// bash reads the word until whitespace/metachar: EOF-x closes the heredoc.
+	// A shorter recorded word would swallow the real command line between
+	// bash's true terminator and the gate's.
+	deny('cat <<EOF-x\nEOF-x\nrm -rf /\n');
+	deny('cat <<E.OF\nE.OF\nrm -rf /\n');
+	// `;` still terminates the word like in bash
+	absent('cat <<EOF;\nrm -rf x\nEOF\necho done');
+});
+
+test("<< -EOF: the dash after whitespace is part of the delimiter, not the tab-strip flag", () => {
+	// bash closes the body at the line -EOF; a gate that recorded delimiter
+	// EOF with tab-strip would keep the body open and swallow real commands
+	absent('cat << -EOF\nrm -rf x\n-EOF\necho done');
+	// <<- (dash immediately after <<) still strips leading tabs
+	absent('cat <<-EOF\n\trm -rf x\n\tEOF');
+});
+
+test("line-continuation delimiter word never claims a shorter terminator", () => {
+	// bash joins cat <<E\ + OF into the word EOF; a gate that recorded the
+	// short word E would terminate the body at a bare "E" line while bash is
+	// still consuming body — the rm line would run unjudged. Not modelable
+	// per-line, so the body is over-judged instead (deny here, never absent).
+	deny('cat <<E\\\nOF\nrm -rf /\necho done');
+});
+
+test("a here-string (<<<) does not open a phantom heredoc", () => {
+	// single line: the payload is string data, never shell
+	absent("cat <<<'rm -rf x'");
+	// next line must still be judged as a command, not swallowed as body
+	deny("cat <<<'data'\nrm -rf /");
+});
+
+test("unquoted heredoc bodies expand: substitutions are judged, never swallowed", () => {
+	// bash expands $(..) and backticks in unquoted bodies; the rm must be judged
+	defer("cat <<EOF\n$(rm -rf /)\nEOF");
+	defer("cat <<EOF\n`rm -rf /`\nEOF");
+	// multi-line substitutions in unquoted bodies span body lines: each line
+	// of the open substitution is judged, not swallowed
+	defer("cat <<EOF\n$(\nrm -rf /\n)\nEOF");
+	// single-line quote-free substitutions in unquoted bodies are the common
+	// real-world shapes (commit messages, templates) and stay judgeable
+	absent("git commit -F- <<EOF\nfix: bump to $(date)\nEOF");
+	absent("cat <<EOF\nHello $(whoami)\nEOF");
+	absent("cat <<EOF\nHello ${HOME}\nEOF");
+	// a ) hiding inside a quoted string of the substitution is why paren
+	// balance cannot decide the end: defer covers the multi-line shape
+	defer("cat <<EOF\n$(echo 'a)b'\nrm -rf /\n)\nEOF");
+	// quoted bodies stay data
+	absent("cat <<'EOF'\n$(rm -rf x)\nEOF");
+	// plain body lines of an unquoted heredoc remain data; parameter expansions
+	// (${VAR}, $VAR) expand into data for the consuming command and never run
+	// as commands — only command substitutions ($(..), backticks) are judged
+	absent("cat <<EOF\nrm -rf x\nEOF");
+	absent("cat <<EOF\nrm -rf ${DIR}\nEOF");
+});
+
+test("an unquoted # starts a comment: << after it never opens a heredoc", () => {
+	// bash runs the rm on line 2; a phantom body would swallow it (gate absent)
+	deny("echo hi # <<EOF\nrm -rf /\nEOF");
+	// # mid-word or after { is not a comment: the heredoc is real
+	absent("cat <<EOF\nrm -rf x\nEOF");
+	// # after a metacharacter boundary is a comment even when not preceded by
+	// whitespace (true |#, x=$(hi)#), and after a standalone ) that closed a
+	// subshell — but a # glued after a substitution's ) is part of the word
+	deny("true |# <<EOF\nrm -rf /\nEOF");
+	deny("(true)# <<EOF\nrm -rf /\nEOF");
+	deny("((1))# <<EOF\nrm -rf /\nEOF");
+	// # after a ) nested inside a substitution is also a comment (the line
+	// bash runs must be judged, not swallowed as heredoc body)
+	defer("x=$( (true)# <<Q\nrm -rf /\nQ\n)");
+	// word characters re-glue the word: the heredoc is real and the body is data
+	absent("(true)x# <<EOF\nrm -rf /\nEOF\necho done");
+	// x=$(hi)# glues the # onto the word in bash: the heredoc is real and the
+	// body line is data (bash does not run the rm)
+	absent("x=$(echo hi)# <<EOF\nrm -rf /\nEOF\necho done");
+	// a trailing comment after the operator is comment text; the rm in the
+	// body is data for cat, never executed (bash semantics)
+	absent("cat <<EOF # trailing comment\nrm -rf /\nEOF");
+});
+
+test("<< inside a nested/quoted construct of a dq-substitution defers", () => {
+	// bash-literal << inside "$( [[ x<<EOF ]] )" is shell text there; a gate
+	// phantom heredoc would swallow the live rm on the next line
+	defer('echo "$( [[ x<<EOF ]] )"\nrm -rf /\nEOF');
+	// nested (( inside the substitution: same untracked-nesting defer
+	defer('echo "$( (( 1<<true )); : )"\nrm -rf /tmp/v\ntrue');
+	// each untracked-nesting trigger marks the substitution un-simple: a <<
+	// after an in-string quote, a [, a backtick, or a standalone case word
+	defer('echo "$( echo \'a\' <<EOF )"\nrm -rf /\nEOF');
+	defer('echo "$( echo "b" <<EOF )"\nrm -rf /\nEOF');
+	defer('echo "$( echo [x <<EOF )"\nrm -rf /\nEOF');
+	defer('echo "$( echo `x` <<EOF )"\nrm -rf /\nEOF');
+	defer('echo "$( case x in esac <<EOF )"\nrm -rf /\nEOF');
+});
+
+test("the outer double quote stays open across a dq-substitution's closing )", () => {
+	// bash: $(..) inside "..." does not close the quote; the <<EOF after the
+	// ) is still quoted text, and the rm on the next line executes
+	deny('echo "$(echo hi) <<EOF "\nrm -rf /\nEOF');
+});
+
+test("backslash escapes inside double quotes keep the quote open", () => {
+	// the \" does not close the quote, so <<EOF stays quoted text
+	defer("printf '%s\\n' \"a\\\" <<EOF \"\nrm -rf /\nEOF");
+});
+
+test("a ] closes a subscript, not the arithmetic context", () => {
+	// $((a[0] << true)): the << is a left shift inside arith, never a heredoc
+	deny("echo $((a[0] << true))\nrm -rf /\ntrue");
+});
+
+test("a heredoc opened on a line ending in a continuation defers", () => {
+	// bash joins cat <<EOF \ + ; rm -rf / into one command line; a gate that
+	// treats the next physical line as body swallows the live command
+	defer("cat <<EOF \\\n; rm -rf /\nEOF");
+	// an escaped backslash (even count) is not a continuation: the delimiter
+	// dequotes to a single backslash and the body closes normally
+	absent("cat <<EOF\\\\\nrm -rf x\nEOF\\");
+});
+
+test("empty quoted delimiter <<'' opens a real body ending at the empty line", () => {
+	// if <<'' were ignored, the body would be reparsed as live text and the
+	// next <<EOF would open a phantom that swallows the rm
+	deny("cat <<''\n<<EOF\n\nrm -rf /\nEOF");
+});
+
+test("dollar-quoted delimiters dequote: <<$'EOF' terminates at EOF", () => {
+	// bash's delimiter for <<$'EOF' and <<$"EOF" is EOF; a wrong recorded
+	// delimiter swallows the live lines between bash's terminator and the gate's
+	deny("cat <<$'EOF'\nEOF\necho X\nrm -rf /");
+	deny('cat <<$"EOF"\nEOF\necho X\nrm -rf /');
+	// escapes inside a double-quoted delimiter dequote too
+	deny('cat <<"E\\$OF"\nE$OF\necho X\nrm -rf /');
+	// ANSI-C escapes change the word: the gate cannot model them, so the body
+	// never closes here (defer) and the live rm is judged
+	defer("cat <<$'\\x45OF'\nEOF\nrm -rf /\n\\x45OF");
+	// a backslash-quoted delimiter is quoted: bash does not expand its body
+	absent("cat <<E\\OF\n$(rm -rf x)\nEOF");
+	// the outer quote closes with the " right after the dq-substitution's )
+	// — a quoted "<<EOF y" argument after it must not open a heredoc
+	deny('echo "$(x)" "<<EOF y"\nrm -rf /\nEOF');
+});
+
+test("unterminated heredoc defers", () => {
+	defer("git commit -m msg <<EOF\nrm -rf /");
+	defer("cat <<'EOF'\nrm -rf x");
+});
+
+test("heredoc inside a double-quoted command substitution is data", () => {
+	// the exact shape that blocked a git commit in practice
+	absent('git add file && git commit -m "$(cat <<\'EOF\'\nmessage mentioning rm -rf /\nhere\nEOF\n)" && git push');
+	absent('git commit -m "$(cat <<\'EOF\'\ndeny("rm -rf /*")\nEOF\n)"');
+});
+
+test("<< inside arithmetic is a left shift, not a heredoc", () => {
+	absent("echo $(( 1<<2 ))");
+	absent("a=$((1<<2))");
+	absent("((1<<2))");
+	absent('echo "$((1<<2))"');
+	absent("[[ 1<<2 == 4 ]] 2>/dev/null || true");
+	absent("a=$[1<<2]");
+	// the umpire's confirmed regression shape: a real rm after the arithmetic is still judged
+	assert.deepEqual(run("echo $(( 1<<2 ))\nrm -rf /tmp/build-123"), {
+		kind: "eligible",
+		targets: ["/tmp/build-123"],
+	});
+	assert.deepEqual(run("x=$((1<<2)); rm -rf dist"), { kind: "eligible", targets: ["dist"] });
+	assert.deepEqual(run("[[ 1<<2 -eq 4 ]] && rm -rf dist"), { kind: "eligible", targets: ["dist"] });
+});
+
+test("heredoc delimiter may be space-separated from <<", () => {
+	absent("cat << EOF\nrm -rf x\nEOF");
+});
+
+test("delimiter dequoting: quotes and backslashes in the delimiter are not part of the terminator", () => {
+	absent('cat <<E"OF"\nrm -rf x\nEOF');
+	// the backslash-quoted case (<<E\\OF, with a substitution body) is pinned
+	// in the dollar-quote test; not duplicated here
+});
+
+test("case-context << is copied literally, never a phantom heredoc", () => {
+	// the umpire's confirmed silent-bypass shape: gate must NOT return absent
+	defer("case $x in\n*<<2*) true ;;\nesac\nrm -rf ~/.ssh");
+		// a genuine heredoc inside a case body is not recognized either: its body
+	// lines are judged as standalone commands (deny here) - never absent
+	deny("case $x in\na) cat <<'EOF'\nrm -rf /\nEOF\n;;\nesac");
+});
+
+test("pending queue does not leak past the heredoc consumer", () => {
+	assert.deepEqual(run('git commit -m "$(cat <<\'EOF\'\nEOF\n)" && rm -rf dist'), {
+		kind: "eligible",
+		targets: ["dist"],
+	});
+});
+
+test("same-line multiple heredocs consume their bodies in order (FIFO)", () => {
+	absent("cat <<A <<B\nfirstA\nA\nfirstB\nB");
+});
+
+test("quote state carries across lines: << inside a multi-line string is not a heredoc", () => {
+	// traced from round-4 review: the per-line quote reset swallowed the real rm line
+	assert.deepEqual(run('"a\n<< EOF\nman"\nrm -rf /tmp/victim\nEOF\necho done'), {
+		kind: "eligible",
+		targets: ["/tmp/victim"],
+	});
+});
+
+test("case/esac words inside quotes do not open or close case contexts", () => {
+	absent('echo "the case" <<EOF\nrm -rf /etc\nEOF');
+});

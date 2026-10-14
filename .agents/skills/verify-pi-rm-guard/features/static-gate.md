@@ -13,8 +13,14 @@
 - Scope: targets must resolve (physically, per path component) inside the
   session cwd or `/tmp`; symlink escapes (`leak` → `$HOME/.ssh`,
   `link/../etc`) cannot pass.
+- Heredoc bodies are data, not commands: an rm mention inside
+  `<<'EOF'`/`<<EOF`/`<<-EOF` (including inside a double-quoted command
+  substitution, the `git commit -m "$(cat <<'EOF'...)"` shape) is absent from
+  the gate; a real rm beside a heredoc is still judged; an unterminated
+  heredoc defers (the gate cannot know where the body ends). See
+  `heredoc-bodies.md`.
 - Mixed commands (recursive plus plain rm, rm behind `sudo`/`xargs`/pipes, rm
-  inside command substitution) defer.
+  inside a command substitution that is not a heredoc consumer) defer.
 
 ## How to get to it (user POV)
 

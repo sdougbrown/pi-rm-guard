@@ -68,9 +68,9 @@ The harness recipe, in `run-case.sh`:
   defers in non-interactive runs;
 - the tool call the "model" issues is exactly the `<command>` argument.
 
-The four primary mapped cases (one command each; the expectation table in the
-harness also maps `eligible-literal`, `low-conf`, `deny-root`, `defer-var`, and
-`glob-unbounded`):
+The primary mapped cases (one command each; the harness table also maps
+`eligible-literal`, `low-conf`, `deny-root`, `defer-var`, `glob-unbounded`,
+`heredoc-mention`, `heredoc-delete`, and `arith-shift`):
 
 ```sh
 H=.agents/skills/verify-pi-rm-guard/helpers
