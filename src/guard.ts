@@ -286,7 +286,9 @@ const GLOB_MATCH_CAP = 64;
  * by bash, so missing it is safe.
  */
 function globComponentMatches(entry: string, component: string): boolean {
-	const escape = (p: string) => p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+	// . and .* must match newlines (bash globs match newline filenames):
+	// [\s\S] instead of . in both semantics paths
+	const escape = (p: string) => p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[\\s\\S]*").replace(/\?/g, "[\\s\\S]");
 	if (new RegExp(`^${escape(component)}$`, "u").test(entry)) return true; // one code point
 	return new RegExp(`^${escape(Buffer.from(component, "utf8").toString("latin1"))}$`).test(Buffer.from(entry, "utf8").toString("latin1")); // one byte
 }

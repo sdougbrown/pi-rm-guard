@@ -77,6 +77,14 @@ test("multi-? patterns match byte-wise like LC_ALL=C bash, so the escape is judg
 	assert.equal(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/leaf??*/passwd`).kind, "deny");
 });
 
+test("a newline-named symlink is matched by * (bash globs match newlines)", () => {
+	// x\ny -> / : a name with a newline inside is one bash glob match for x*
+	// in every locale; the regex must not stop at the newline ([\s\S] semantics)
+	rmSync(path.join("/tmp", `rmguard-tmp-${process.pid}`, "x\ny"), { force: true });
+	symlinkSync("/etc", path.join("/tmp", `rmguard-tmp-${process.pid}`, "x\ny"));
+	assert.equal(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/x*/passwd`).kind, "deny");
+});
+
 test("dot-anchored glob matches dotfiles; a non-dot pattern skips them (bash semantics)", () => {
 	const tmpDir = path.join("/tmp", `rmguard-tmp-${process.pid}`);
 	const dotDir = path.join(tmpDir, "dotcheck");
