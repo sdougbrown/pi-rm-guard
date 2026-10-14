@@ -323,8 +323,10 @@ function globComponentMatches(entry: string, component: string): boolean {
 function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } | { defer: string } | { deny: string } {
 	const absolute = pattern.startsWith("/");
 	const components = pattern.split("/").filter((c) => c.length > 0 && c !== ".");
+	// always found: the caller only gets here with glob chars present, and a
+	// component containing * or ? is neither empty nor "." (the only filtered
+	// components), so the index cannot be -1
 	let firstGlob = components.findIndex((c) => hasGlobChars(c));
-	if (firstGlob === -1) firstGlob = components.length;
 
 	// Deny/scope-check the literal prefix as a directory that will be enumerated.
 	// This runs before the unbounded-pattern check so that `/etc/*` denies (the
@@ -496,7 +498,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 			const verdict = analyzeSegment(segment, home, vars);
 			if ("targets" in verdict) {
 				sawRecursive = true;
-				if (verdict.targets.some((t) => t.includes("*") || t.includes("?"))) sawGlobTarget = true;
+				if (verdict.targets.some((t) => hasGlobChars(t))) sawGlobTarget = true;
 				targets.push(...verdict.targets);
 			} else if (verdict.defer === "rm without a recursive flag") {
 				sawPlainRm = true;
