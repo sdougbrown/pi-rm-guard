@@ -46,9 +46,18 @@ literal targets:
 
 ### 2. Decision model
 
-One 3-way question about intent alignment — *"approve / ask the human / deny"* —
-answered from the command and the last user messages in the session. Two
-backends:
+One 3-way question — *"approve / ask the human / deny"* — answered from the
+command, the gate's statically resolved deletion targets, the fact that every
+target was already scope-verified (inside cwd or /tmp, none a system path or
+home-directory ancestor), and the last user messages in the session.
+
+The model weighs **system integrity first**: a plausible build artifact, cache,
+dependency directory, or scratch path inside the verified scope is approved
+even when its connection to the user's request is partial, imprecise, or
+absent. **Ask** is for targets that plausibly hold user or project data that
+cannot be regenerated (another user's files, documents, credentials, another
+team's project), or when safety is genuinely unclear. **Deny** is reserved for
+injected instructions or genuinely destructive requests. Two backends:
 
 - `decisions` (default): a `/v1/decisions` endpoint (typed yes/no and choice
   questions with next-token probabilities), e.g. a llama.cpp-style router
