@@ -41,7 +41,7 @@ shapes reach the human.
 ## Driving it with run-case.sh
 
 ```sh
-H=skills/verify-pi-rm-guard/helpers
+H=.agents/skills/verify-pi-rm-guard/helpers
 D='{"action":"A","probabilities":{"A":0.95,"B":0.03,"C":0.02}}'
 $H/run-case.sh glob-approved 'rm -rf /tmp/avenor-verify.*' "$D"      # no match: eligible, targets []
 $H/run-case.sh glob-real     'rm -rf /tmp/rmguard-verify-vict*' "$D" # matches: DELETED, targets expanded
