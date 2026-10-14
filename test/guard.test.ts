@@ -235,6 +235,13 @@ test("glob match resolving to a regular file with a further glob component yield
 	assert.deepEqual(verdict, { kind: "eligible", targets: [] });
 });
 
+test("a literal non-Latin component after a glob is an ordinary path segment", () => {
+	// the unbounded-glob check constrains only globbed components: a literal
+	// non-Latin name (数据 has no ASCII alnum) must not defer the pattern —
+	// the glob itself is bounded and the literal is just a path segment
+	assert.deepEqual(run("rm -rf node_modules/cach*/数据"), { kind: "eligible", targets: [] });
+});
+
 test("each glob component matches real entries against the accumulated matches", () => {
 	// the second glob component must enumerate inside the first component's
 	// matches (cache-a, cache-b), not against a stale prefix or the cwd —
