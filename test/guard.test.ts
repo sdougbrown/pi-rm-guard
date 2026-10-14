@@ -406,6 +406,8 @@ test("heredoc bodies are data, not commands", () => {
 	// while benign quoted substitutions and quoted rm mentions stay absent
 	defer('echo "$(rm -rf /)"');
 	defer('echo "x$(rm -rf /)y"');
+	// the backtick half of the quotedSubst check executes too
+	defer('echo "`rm -rf /`"');
 	absent('echo "$(date)"');
 	absent('git commit -m "see rm -rf docs"');
 	// the delimiter must be a whole line: "xEOF" does not close
@@ -467,8 +469,6 @@ test("unquoted heredoc bodies expand: substitutions are judged, never swallowed"
 	// as commands — only command substitutions ($(..), backticks) are judged
 	absent("cat <<EOF\nrm -rf x\nEOF");
 	absent("cat <<EOF\nrm -rf ${DIR}\nEOF");
-	defer("cat <<EOF\n$(rm -rf /)\nEOF");
-	defer("cat <<EOF\n`rm -rf /`\nEOF");
 });
 
 test("an unquoted # starts a comment: << after it never opens a heredoc", () => {
@@ -501,6 +501,13 @@ test("<< inside a nested/quoted construct of a dq-substitution defers", () => {
 	defer('echo "$( [[ x<<EOF ]] )"\nrm -rf /\nEOF');
 	// nested (( inside the substitution: same untracked-nesting defer
 	defer('echo "$( (( 1<<true )); : )"\nrm -rf /tmp/v\ntrue');
+	// each untracked-nesting trigger marks the substitution un-simple: a <<
+	// after an in-string quote, a [, a backtick, or a standalone case word
+	defer('echo "$( echo \'a\' <<EOF )"\nrm -rf /\nEOF');
+	defer('echo "$( echo "b" <<EOF )"\nrm -rf /\nEOF');
+	defer('echo "$( echo [x <<EOF )"\nrm -rf /\nEOF');
+	defer('echo "$( echo `x` <<EOF )"\nrm -rf /\nEOF');
+	defer('echo "$( case x in esac <<EOF )"\nrm -rf /\nEOF');
 });
 
 test("the outer double quote stays open across a dq-substitution's closing )", () => {
@@ -584,9 +591,8 @@ test("heredoc delimiter may be space-separated from <<", () => {
 
 test("delimiter dequoting: quotes and backslashes in the delimiter are not part of the terminator", () => {
 	absent('cat <<E"OF"\nrm -rf x\nEOF');
-	// a backslash-quoted delimiter is quoted: the body is data (with a
-	// substitution in it — the unquoted counterpart of the same shape defers)
-	absent("cat <<E\\OF\n$(rm -rf x)\nEOF");
+	// the backslash-quoted case (<<E\\OF, with a substitution body) is pinned
+	// in the dollar-quote test; not duplicated here
 });
 
 test("case-context << is copied literally, never a phantom heredoc", () => {
