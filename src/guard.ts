@@ -767,7 +767,9 @@ function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } |
 	// path segments (their existence is checked by the expansion) — a non-Latin
 	// name like 数据 has no ASCII alnum and must not trip this check.
 	for (let i = firstGlob; i < components.length; i++) {
-		if (!hasGlobChars(components[i])) continue;
+		// `..` after a glob can move the match set up a tree, so it keeps the
+		// literal-character guard; only ordinary literal names are exempt from it
+		if (!hasGlobChars(components[i]) && components[i] !== "..") continue;
 		if (!/[a-zA-Z0-9_-]/.test(components[i].replace(/\*|\?/g, ""))) {
 			return { defer: `unbounded glob pattern: ${pattern}` };
 		}
