@@ -34,6 +34,9 @@ const absent = (cmd: string) => {
 };
 
 test("recursive rm with literal targets under cwd is eligible", () => {
+	// a ~user prefix expands in bash to that user's real home (out of scope):
+	// the gate cannot judge it statically and must not treat it as cwd-relative
+	defer("rm -rf ~other/build-*");
 	assert.deepEqual(run("rm -rf node_modules/.cache"), { kind: "eligible", targets: ["node_modules/.cache"] });
 	assert.equal(run("rm -rf build dist").kind, "eligible");
 	assert.equal(run("rm -fr dist").kind, "eligible");
@@ -72,6 +75,7 @@ test("multi-? patterns match byte-wise like LC_ALL=C bash, so the escape is judg
 	// leaf🎯 is one code point but four UTF-8 bytes: C-locale bash expands
 	// leaf??* to it while a code-point-only regex does not — a zero-match
 	// verdict would let the symlink escape the judged set entirely
+	rmSync(path.join("/tmp", `rmguard-tmp-${process.pid}`, "leaf🎯"), { force: true }); // tolerate a crashed prior run at the same pid
 	symlinkSync("/etc", path.join("/tmp", `rmguard-tmp-${process.pid}`, "leaf🎯"));
 	assert.equal(run(`rm -rf /tmp/rmguard-tmp-${process.pid}/leaf??*/passwd`).kind, "deny");
 });
