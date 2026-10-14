@@ -5,15 +5,15 @@
 #
 # Starts a private pair of stub engines, points a disposable pi agent dir at
 # them, runs `pi -p` with the extension loaded, and prints the observable
-# outcome. Everything lands under skills/verify-pi-rm-guard/evidence/<stamp>-<case>/
+# outcome. Everything lands under .agents/skills/verify-pi-rm-guard/evidence/<stamp>-<case>/
 # and survives cleanup; only the stub processes are torn down.
 #
 # Cases that expect the guard to block pass in print mode (fail-closed), which
 # is exactly how a defer/deny behaves for non-interactive runs.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
-SKILL_DIR="$REPO/skills/verify-pi-rm-guard"
+REPO="$(cd "$(dirname "$0")/../../../.." && pwd)"
+SKILL_DIR="$REPO/.agents/skills/verify-pi-rm-guard"
 EVIDENCE="$SKILL_DIR/evidence"
 CASE="$1"
 COMMAND="$2"

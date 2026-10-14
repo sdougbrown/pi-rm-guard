@@ -2,7 +2,7 @@
 # One read-only check: is this checkout worth driving?
 # usage: doctor.sh   (exit 0 = ready, nonzero = fix the reported problem)
 set -euo pipefail
-REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
+REPO="$(cd "$(dirname "$0")/../../../.." && pwd)"
 ok=1
 
 command -v pi >/dev/null || { echo "FAIL: pi not on PATH"; ok=0; }
@@ -20,7 +20,7 @@ fi
 # Prove the harness itself runs: the stub engines self-test both endpoints in
 # one process (no leftover stubs). A broken stub would generate wrong proofs.
 SELFTEST_DIR="$(mktemp -d)"
-if node "$REPO/skills/verify-pi-rm-guard/helpers/stub-servers.mjs" "$SELFTEST_DIR" --selftest > /tmp/rmguard-selftest.log 2>&1; then
+if node "$REPO/.agents/skills/verify-pi-rm-guard/helpers/stub-servers.mjs" "$SELFTEST_DIR" --selftest > /tmp/rmguard-selftest.log 2>&1; then
 	echo "stub selftest: OK"
 else
 	echo "FAIL: stub-servers.mjs --selftest did not pass; the stub harness itself is broken"
