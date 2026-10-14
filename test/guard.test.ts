@@ -126,6 +126,10 @@ test("glob with a .. component after the glob defers", () => {
 
 test("glob anchored at the home directory denies", () => {
 	deny("rm -rf ~/*");
+	// whole-home globs deny; a subtree glob under home falls through to the
+	// scope check and defers, consistent with its literal counterpart
+	defer("rm -rf ~/proj*");
+	defer("rm -rf ~/.config/*");
 });
 
 test("relative glob with a literal subdirectory prefix expands", () => {
