@@ -6,9 +6,10 @@
   go to the decision model.
 - Variable indirection resolved from literal assignments in the same command
   (`WT=/tmp/x; rm -rf $WT`) behaves like a literal target.
-- Anything the gate cannot resolve — `$VAR` with no literal assignment, globs
-  (`*`, `?`), quoted targets, command substitution, backticks — defers to a
-  human (in print mode: fails closed with a block).
+- Glob targets (`*`, `?`) are expanded by the gate and judged per match — see
+  `glob-targets.md`. Unbounded patterns (`rm -rf *`, `rm -rf dist/*`), quoted
+  globs, `$VAR` with no literal assignment, command substitution, and backticks
+  still defer to a human (in print mode: fails closed with a block).
 - Scope: targets must resolve (physically, per path component) inside the
   session cwd or `/tmp`; symlink escapes (`leak` → `$HOME/.ssh`,
   `link/../etc`) cannot pass.
@@ -28,7 +29,7 @@ and the defer reason; in print/JSON/RPC mode the call is blocked (fail-closed).
 H=.agents/skills/verify-pi-rm-guard/helpers
 D='{"action":"A","probabilities":{"A":0.95,"B":0.03,"C":0.02}}'
 $H/run-case.sh eligible-literal 'rm -rf /tmp/rmguard-verify-victim' "$D"
-$H/run-case.sh defer-glob       'rm -rf /tmp/rmguard-verify-vic*'   "$D"
+$H/run-case.sh defer-glob       'rm -rf /tmp/rmguard-verify-victim/*' "$D"
 $H/run-case.sh defer-var        'rm -rf $SOME_VAR'                  "$D"
 ```
 
