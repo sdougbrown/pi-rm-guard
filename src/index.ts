@@ -135,7 +135,7 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 		const recent = recentUserMessages(pi, 2);
 		const intentParts = [...recent, currentPrompt].filter((m) => m.length > 0 && !recent.includes(m));
 		const intent = intentParts.join(" | ") || "(no recent user request in session)";
-		const decision = await getBackend(ctx).decide({ command, intent });
+		const decision = await getBackend(ctx).decide({ command, intent, targets: analysis.targets });
 
 		if ("error" in decision) {
 			return requireHuman(ctx, command, `decision model unavailable: ${decision.error}`, "model-error", [intent]);
@@ -159,7 +159,7 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 			return { block: true, reason: `rm-guard: ${getBackend(ctx).name} denied (${decision.probability.toFixed(2)}): ${command}` };
 		}
 
-		return requireHuman(ctx, command, `${getBackend(ctx).name} confidence ${decision.probability.toFixed(2)}`, "low-confidence", [intent]);
+		return requireHuman(ctx, command, `model chose ${decision.label} (p=${decision.probability.toFixed(2)}) — deferring to human`, "low-confidence", [intent]);
 	});
 
 	function requireHuman(
