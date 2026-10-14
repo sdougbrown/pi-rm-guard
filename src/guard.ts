@@ -625,6 +625,11 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 			continue;
 		}
 		const expanded = expandTilde(token, home);
+		// expandTilde handles ~ and ~/...; a ~user prefix expands (in bash) to
+		// that user's home — real and out of scope, so it cannot be judged here
+		if (expanded.startsWith("~")) {
+			return { defer: `target is not statically resolvable: ${token}` };
+		}
 		const substituted = substituteVars(expanded, vars, home);
 		// Glob characters are allowed in targets: expandGlobTarget expands them
 		// against the real filesystem before the scope check. Everything else
@@ -740,7 +745,7 @@ function expandGlobTarget(pattern: string, cwd: string): { matches: string[] } |
 		}
 	}
 	const tmpReal = resolveReal("/tmp", cwd);
-	if (!(isUnder(prefixReal, cwdReal) || isUnder(prefixReal, tmpReal) || prefixReal === cwdReal || prefixReal === tmpReal)) {
+	if (!(isUnder(prefixReal, cwdReal) || isUnder(prefixReal, tmpReal))) {
 		return { defer: `${pattern} matches outside the session and /tmp` };
 	}
 
