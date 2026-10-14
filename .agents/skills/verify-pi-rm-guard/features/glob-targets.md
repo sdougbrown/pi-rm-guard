@@ -13,8 +13,11 @@
 - Bounds that keep a glob judgeable: every globbed component needs at least one
   alphanumeric, `_`, or `-` character (dot-only shapes like `.*` defer); expansion
   is capped at 64 matches; the literal prefix
-  (components before the first glob) is denied on its own for root, system
-  trees, and the whole home directory — even when the glob matches nothing.
+  (components before the first glob) is denied on its own for the filesystem
+  root and system trees — even when the glob matches nothing — and for a
+  whole-home glob (`~/*`, `$HOME/*`: the glob component at the home level is a
+  bare `*`). A subtree glob under home (`~/proj*`, `~/.config/*`) defers via
+  the scope check instead, consistent with its literal counterpart.
 - `?` matches one code point (a UTF-8-locale shell) or one byte (LC_ALL=C —
   where `leaf??*` matches `leaf🎯`); the gate judges the union of both, and
   both semantics match newline filenames (`[\s\S]`, since bash globs match
