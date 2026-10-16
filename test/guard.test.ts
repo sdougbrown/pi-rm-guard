@@ -138,18 +138,20 @@ test("mixed recursive and non-recursive rm defers", () => {
 });
 
 test("redirection tokens around a recursive rm are inert", () => {
-	assert.equal(eligible("rm -rf dist 2>/dev/null").kind, "eligible");
-	assert.equal(eligible("rm -rf dist > /dev/null").kind, "eligible");
-	assert.equal(eligible("rm -rf dist >>build.log").kind, "eligible");
-	assert.equal(eligible("rm -rf dist 2>&1").kind, "eligible");
-	assert.equal(eligible("rm -rf dist &>log").kind, "eligible");
-	assert.equal(eligible("rm -rf dist </dev/null").kind, "eligible");
-	assert.equal(eligible("rm -rf dist < /dev/null").kind, "eligible");
-	assert.equal(eligible("rm -rf dist 2>/dev/null; echo done").kind, "eligible");
+	assert.equal(eligible("rm -rf dist 2>/dev/null").kind, "eligible", "attached stderr redirect");
+	assert.equal(eligible("rm -rf dist > /dev/null").kind, "eligible", "separated redirect");
+	assert.equal(eligible("rm -rf dist >>build.log").kind, "eligible", "append redirect");
+	assert.equal(eligible("rm -rf dist 2>&1").kind, "eligible", "fd duplication");
+	assert.equal(eligible("rm -rf dist &>log").kind, "eligible", "bash both-streams form");
+	assert.equal(eligible("rm -rf dist </dev/null").kind, "eligible", "attached input redirect");
+	assert.equal(eligible("rm -rf dist < /dev/null").kind, "eligible", "separated input redirect");
+	assert.equal(eligible("rm -rf dist 2>/dev/null; echo done").kind, "eligible", "redirect with follow-on segment");
+	assert.equal(eligible("rm -rf -- -dist").kind, "eligible", "literal dash operand after --");
 });
 
 test("redirection words with expansions defer", () => {
 	defer("rm -rf dist 2>$(mktemp)");
+	defer("rm -rf dist > $(mktemp)");
 	defer("rm -rf dist > `pwd`/log");
 });
 
@@ -172,6 +174,52 @@ test("quoted heredoc bodies are data, not shell", () => {
 test("unquoted heredoc bodies run substitutions, so rm inside defers", () => {
 	defer(["cat <<EOF", "$(rm -rf /tmp/x)", "EOF", "ls"].join("\n"));
 	defer(["cat <<EOF", "`rm -rf ~`", "EOF", "ls"].join("\n"));
+	// quotes are literal at body top level: $(...) inside "..." still runs
+	defer(['cat <<EOF', '"$(rm -rf /tmp/x)"', "EOF", "ls"].join("\n"));
+	// inside a substitution, shell grammar governs the span
+	defer(["cat <<EOF", "$(echo ')' && rm -rf /tmp/x)", "EOF", "ls"].join("\n"));
+	defer(["cat <<EOF", "$( (rm -rf /tmp/x) )", "EOF", "ls"].join("\n"));
+});
+
+test("subshell grouping around rm never hides it, at any nesting level", () => {
+	defer("echo $( (rm -rf $HOME) )");
+	defer("echo $((rm -rf /etc))");
+});
+
+test("plain rm text in an unquoted body is data, not a command", () => {
+	absent(["cat <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
+});
+
+test("a heredoc feeding a script interpreter is judged, not skipped", () => {
+	// the body executes as a script, so it is left as live text
+	deny(["bash <<'EOF'", "rm -rf /", "EOF", "ls"].join("\n"));
+	assert.equal(eligible(["bash <<EOF", "rm -rf /tmp/x", "EOF", "ls"].join("\n")).kind, "eligible");
+	absent(["bash <<'EOF'", "echo hi", "EOF", "ls"].join("\n"));
+	// interpreter anywhere in the consuming segment counts, including pipes
+	assert.equal(
+		eligible(["cat <<EOF | bash", "rm -rf /tmp/x", "EOF", "ls"].join("\n")).kind,
+		"eligible",
+	);
+	absent(["python <<'EOF'", "print('hi')", "EOF", "ls"].join("\n"));
+});
+
+test("variables cannot carry flags into target position", () => {
+	defer("X=-rf; Y=/etc; rm $X $Y");
+	defer("X=-rf; rm $X /etc");
+	defer("X=-r; rm $X ~");
+	// after `--` every token is an operand: expansion cannot inject a flag
+	assert.equal(eligible("X=-dist; rm -rf -- $X").kind, "eligible");
+});
+
+test("exotic heredoc delimiters are left unparsed and fully judged", () => {
+	// $, backtick, or backslash in the delimiter changes the terminator bash
+	// looks for; the heredoc is not extracted, so every line — body or live —
+	// is judged as live shell. The real post-terminator rm must be judged.
+	assert.equal(eligible(["cat <<$EOF", "data", "", "rm -rf /tmp/x", "ls"].join("\n")).kind, "eligible");
+	assert.equal(
+		eligible(["cat <<EOF\\ ", "data", "EOF ", "rm -rf /tmp/x", "ls"].join("\n")).kind,
+		"eligible",
+	);
 });
 
 test("heredoc delimiters without a terminator consume the rest as body", () => {

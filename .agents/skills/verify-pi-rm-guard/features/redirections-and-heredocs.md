@@ -15,6 +15,12 @@ Two shell constructs that do not affect what an `rm` deletes:
   unquoted delimiter keeps expansion in the body: `$(rm -rf /tmp/x)` on a body
   line executes, so unquoted bodies are still scanned and defer when a
   substitution invokes rm.
+- **The exception is a heredoc consumed by a stdin script interpreter** —
+  `bash`, `sh`, `python`, `node`, `awk`, `ssh`, and their family, anywhere in
+  the opening line (so `cat <<EOF | bash` counts). That body executes as a
+  script, so it is left unextracted and judged as live text: `bash <<'EOF'`
+  with an `rm -rf /` body auto-denies, a benign script body stays absent,
+  and an in-scope `rm -rf /tmp/x` body goes to the model.
 
 Terminator matching is strict (a line must be exactly the delimiter; `<<-`
 allows leading tabs) — a line like `EOF; rm -rf dist` does not terminate a
@@ -65,6 +71,8 @@ Expected end states (all mapped in run-case.sh's expectation table):
 - The quoted-heredoc skip must not hide a live rm elsewhere in the same
   command: `cat > f <<'EOF' … EOF` followed by a real `rm -rf dist` is still
   judged eligible/deferred on its own merits.
+- The skip never applies when the heredoc feeds a script interpreter: that
+  body executes, so it is judged as live text.
 - Body scanning for unquoted delimiters is quote-blind at the body's top
   level (quotes are literal data there), but a `$(...)` span is matched with
   full shell grammar — quotes and nesting count inside a substitution, so

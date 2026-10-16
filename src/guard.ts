@@ -20,6 +20,27 @@ export type IneligibleRm = { ok: false; reason: string };
 
 const UNRESOLVABLE = new Set(["$", "`", '"', "'", "\\", "*", "?", "[", "<", ">", "(", ")", "{", "}", "!", "&"]);
 
+/**
+ * Commands that execute their stdin as a script. A heredoc consumed by one of
+ * these is code, not data — its body is left unextracted so every line is
+ * judged as live shell, which restores the pre-heredoc-handling verdicts.
+ * Any token in the consuming segment counts, so `cat <<EOF | bash` is caught.
+ */
+const SCRIPT_INTERPRETERS = new Set([
+	"bash", "sh", "ash", "dash", "zsh", "ksh", "csh", "tcsh", "fish", "ssh",
+	"python", "python2", "python3", "node", "deno", "bun", "ruby", "irb", "perl",
+	"php", "lua", "awk", "gawk", "R", "Rscript", "julia", "osascript",
+]);
+
+/** Whether the segment opening a heredoc names a stdin script consumer. */
+function heredocFeedsInterpreter(command: string, heredocStart: number): boolean {
+	const lineStart = command.lastIndexOf("\n", heredocStart) + 1;
+	const lineEnd = command.indexOf("\n", heredocStart);
+	const line = command.slice(lineStart, lineEnd === -1 ? command.length : lineEnd);
+	const tokens = line.split(/[;|&<>]+/).flatMap((part) => part.split(/\s+/));
+	return tokens.some((token) => SCRIPT_INTERPRETERS.has(token.replace(/^.*\//, "")));
+}
+
 function hasUnresolvableChars(token: string): boolean {
 	for (const ch of token) if (UNRESOLVABLE.has(ch)) return true;
 	return false;
@@ -328,7 +349,7 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 			command[i - 1] !== "<"
 		) {
 			const parsed = parseHeredoc(command, i);
-			if (parsed) {
+			if (parsed && !heredocFeedsInterpreter(command, i)) {
 				if (!parsed.quoted) expansionBodies.push(parsed.body);
 				pendingSkip = parsed.skipTo;
 				i = parsed.afterDelimiter;
@@ -497,8 +518,9 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 		}
 		const expanded = expandTilde(token, home);
 		const substituted = substituteVars(expanded, vars, home);
-		if (substituted.startsWith("-")) {
-			// a variable can carry a flag into target position: X=-rf; rm $X /etc
+		if (!pastDashDash && substituted.startsWith("-")) {
+			// a variable can carry a flag into target position: X=-rf; rm $X /etc.
+			// After `--` every token is an operand, so the check stops there.
 			return { defer: `target expands flag-shaped: ${token}` };
 		}
 		if (hasUnresolvableChars(substituted)) {
