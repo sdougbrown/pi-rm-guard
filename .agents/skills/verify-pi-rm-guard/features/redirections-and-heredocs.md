@@ -19,10 +19,14 @@ Two shell constructs that do not affect what an `rm` deletes:
 Terminator matching is strict (a line must be exactly the delimiter; `<<-`
 allows leading tabs) — a line like `EOF; rm -rf dist` does not terminate a
 heredoc and its text never executes, matching real bash. A missing terminator
-consumes the rest of the command as body, also matching bash.
+consumes the rest of the command as body, also matching bash. A delimiter
+containing `$`, a backtick, or a backslash is not extracted at all: bash's
+terminator differs from the literal word, so every line is judged as live
+shell, which can only over-gate.
 
-Heredocs inside quotes or command substitutions are not extracted; they defer
-through the normal unresolvable rules.
+Heredocs inside quotes or `$(...)`/backtick substitutions are not extracted;
+their text is judged through the normal rules (mostly a conservative defer,
+though a backtick-wrapped body line can be over-gated as live rm text).
 
 ## How to get to it (user POV)
 
@@ -61,5 +65,8 @@ Expected end states (all mapped in run-case.sh's expectation table):
 - The quoted-heredoc skip must not hide a live rm elsewhere in the same
   command: `cat > f <<'EOF' … EOF` followed by a real `rm -rf dist` is still
   judged eligible/deferred on its own merits.
-- Body scanning for unquoted delimiters is quote-blind: `$(rm …)` inside
-  `"…"` on a body line still expands in an unquoted heredoc and must defer.
+- Body scanning for unquoted delimiters is quote-blind at the body's top
+  level (quotes are literal data there), but a `$(...)` span is matched with
+  full shell grammar — quotes and nesting count inside a substitution, so
+  `$(echo ')' && rm …)` spans to the true closing paren. Subshell grouping
+  is handled too: `$( (rm -rf …) )` defers.

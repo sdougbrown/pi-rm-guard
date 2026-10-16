@@ -209,8 +209,10 @@ function parseHeredoc(command: string, start: number): ParsedHeredoc | null {
 
 	let delimiter = "";
 	let quoted = false;
+	let quoteChar = "";
 	if (command[i] === "'" || command[i] === '"') {
-		const close = command.indexOf(command[i], i + 1);
+		quoteChar = command[i];
+		const close = command.indexOf(quoteChar, i + 1);
 		if (close === -1) return null; // unterminated quote: not parseable, stay conservative
 		delimiter = command.slice(i + 1, close);
 		quoted = true;
@@ -221,6 +223,11 @@ function parseHeredoc(command: string, start: number): ParsedHeredoc | null {
 		delimiter = command.slice(wordStart, i);
 		if (delimiter === "") return null; // no delimiter word: leave `<<` as literal text
 	}
+	// `$`, a backtick, or a backslash in the delimiter changes the terminator
+	// bash looks for: the word can expand, or escapes can join it. Leave such a
+	// heredoc unparsed. Every line is then judged as live shell, which can only
+	// over-gate — it never skips a live rm.
+	if (/[$`\\]/.test(delimiter) && quoteChar !== "'") return null;
 
 	const newline = command.indexOf("\n", i);
 	if (newline === -1) {
@@ -249,8 +256,9 @@ function parseHeredoc(command: string, start: number): ParsedHeredoc | null {
  * never commands. Quoted delimiters (`<<'EOF'`) make the body fully literal,
  * so it is inert. Unquoted delimiters keep command/parameter expansion in
  * the body, so those bodies are returned and must be scanned for executing
- * substitutions. Heredocs inside quotes or substitutions are left untouched
- * and defer through the normal unresolvable rules instead.
+ * substitutions. Heredocs inside quotes or $(…)/backtick spans are left
+ * untouched; their text is judged through the normal rules, which can only
+ * over-gate it.
  */
 function extractHeredocs(command: string): { remainder: string; expansionBodies: string[] } {
 	let out = "";
@@ -303,7 +311,9 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 			i++;
 			continue;
 		}
-		if (ch === "\n" && pendingSkip !== -1) {
+		if (ch === "\n" && pendingSkip !== -1 && !quote && paren === 0 && !backticks) {
+			// the body starts after the logical line completes, not inside an
+			// open quote or substitution
 			out += "\n";
 			i = pendingSkip;
 			pendingSkip = -1;
@@ -332,25 +342,56 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 }
 
 /**
+ * Quote-aware scan of one `$( ... )` span starting just after the `(`.
+ * Quotes and nested parentheses count inside a substitution — that is real
+ * shell grammar even inside a heredoc body — and an unterminated span takes
+ * the rest of the text as its content.
+ */
+function subshellSpan(text: string, start: number): { inner: string; end: number } {
+	let depth = 1;
+	let quote: string | null = null;
+	let inner = "";
+	for (let i = start; i < text.length; i++) {
+		const ch = text[i];
+		if (quote) {
+			inner += ch;
+			if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === "'" || ch === '"') {
+			quote = ch;
+			inner += ch;
+			continue;
+		}
+		if (ch === "\\" && i + 1 < text.length) {
+			inner += ch + text[i + 1];
+			i++;
+			continue;
+		}
+		if (ch === "(") depth++;
+		if (ch === ")") {
+			depth--;
+			if (depth === 0) return { inner, end: i + 1 };
+		}
+		inner += ch;
+	}
+	return { inner, end: text.length };
+}
+
+/**
  * Quote-blind scan of an unquoted heredoc body for command substitutions.
- * Quotes are literal data inside heredocs, so `$(...)` inside `"..."` still
- * executes and must not be skipped.
+ * At the body's top level quotes are literal data — `$(...)` inside "..."
+ * still executes and must not be skipped — but once inside a substitution,
+ * shell grammar (quotes, nesting) governs the span, so subshellSpan is
+ * quote-aware.
  */
 function heredocInvokesRm(body: string): boolean {
 	let i = 0;
 	while (i < body.length) {
 		if (body[i] === "$" && body[i + 1] === "(") {
-			let depth = 1;
-			let inner = "";
-			let j = i + 2;
-			while (j < body.length && depth > 0) {
-				if (body[j] === "(") depth++;
-				else if (body[j] === ")") depth--;
-				if (depth > 0) inner += body[j];
-				j++;
-			}
-			if (invokesRm(inner)) return true;
-			i = j;
+			const span = subshellSpan(body, i + 2);
+			if (invokesRm(span.inner)) return true;
+			i = span.end;
 			continue;
 		}
 		if (body[i] === "`") {
@@ -370,6 +411,7 @@ function hasRmToken(command: string): boolean {
 	return command
 		.split(/\s+/)
 		.filter(Boolean)
+		.map((token) => token.replace(/^\(+/, "")) // subshell grouping: $( (rm ...) )
 		.some((token) => token === "rm" || token.endsWith("/rm"));
 }
 
@@ -426,9 +468,9 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 	let sawRecursive = false;
 	let pastDashDash = false;
 	const targets: string[] = [];
-	// Unresolvable targets that only matter if the rm turns out recursive: a
-	// plain rm with them is pi's normal flow, so the defer is held back until
-	// the flag scan completes.
+	// Unresolvable targets that only matter if the rm turns out recursive.
+	// A plain rm with such targets is pi's normal flow, so the defer is held
+	// back until the flag scan completes.
 	let targetDefer = "";
 
 	for (; i < tokens.length; i++) {
@@ -455,12 +497,16 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 		}
 		const expanded = expandTilde(token, home);
 		const substituted = substituteVars(expanded, vars, home);
+		if (substituted.startsWith("-")) {
+			// a variable can carry a flag into target position: X=-rf; rm $X /etc
+			return { defer: `target expands flag-shaped: ${token}` };
+		}
 		if (hasUnresolvableChars(substituted)) {
 			const reason = `target is not statically resolvable: ${token}`;
 			// Executing constructs (substitution, backticks) and shape-changing ones
-			// (variables can expand to flags; an expansion with no static prefix
-			// can match a file literally named "-rf") defer regardless of
-			// recursion — even a plain rm can be made recursive by them.
+			// defer regardless of recursion. Variables can expand to flags. An
+			// expansion with no static prefix can match a file literally named
+			// "-rf". Either can make a plain rm recursive.
 			if (/[$`]/.test(substituted) || firstUnresolvableAt(substituted) === 0) return { defer: reason };
 			targetDefer ||= reason;
 			continue;

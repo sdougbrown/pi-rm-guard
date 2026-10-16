@@ -142,6 +142,7 @@ test("redirection tokens around a recursive rm are inert", () => {
 	assert.equal(eligible("rm -rf dist > /dev/null").kind, "eligible");
 	assert.equal(eligible("rm -rf dist >>build.log").kind, "eligible");
 	assert.equal(eligible("rm -rf dist 2>&1").kind, "eligible");
+	assert.equal(eligible("rm -rf dist &>log").kind, "eligible");
 	assert.equal(eligible("rm -rf dist </dev/null").kind, "eligible");
 	assert.equal(eligible("rm -rf dist < /dev/null").kind, "eligible");
 	assert.equal(eligible("rm -rf dist 2>/dev/null; echo done").kind, "eligible");
