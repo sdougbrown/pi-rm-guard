@@ -16,8 +16,11 @@
   command or target word (`rm>f -rf /`, `rm -rf dist>log`) is stripped
   before tokens are judged.
 - Anything the gate cannot resolve — `$VAR` with no literal assignment, globs
-  (`*`, `?`), quoted targets, command substitution, backticks — defers to a
-  human (in print mode: fails closed with a block).
+  (`*`, `?`), quoted targets, command substitution, process substitution
+  (`<(cmd)`, `>(cmd)` — the inner command runs asynchronously), backticks,
+  and tilde forms beyond `~`/`~/` (`~user`, `~+`, `~-` expand outside the
+  gate's reach) — defers to a human (in print mode: fails closed with a
+  block).
 - Redirection operators (`2>/dev/null`, `2>&1`) are inert: their word never
   enters rm's argv. Heredoc bodies are data — quoted delimiters are skipped
   entirely; unquoted bodies are scanned for substitutions that invoke rm.

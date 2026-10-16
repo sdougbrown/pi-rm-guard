@@ -287,6 +287,24 @@ test("heredoc: variable and function consumers are unresolvable, not data", () =
 	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
 });
 
+test("process substitutions run their inner command and defer", () => {
+	defer("echo <(rm -rf /etc)");
+	defer("diff <(ls) <(rm -rf /etc)");
+	defer("tee >(rm -rf /etc)");
+	// process substitutions inside unquoted heredoc bodies execute too
+	defer(["cat <<EOF", "<(rm -rf /etc)", "EOF", "ls"].join("\n"));
+});
+
+test("tilde forms the gate cannot place defer", () => {
+	defer("rm -rf ~root/x");
+	defer("rm -rf ~+/x");
+	defer("rm -rf ~-/x");
+	// the plain ~ form resolves to the real home and is scope-checked like
+	// any literal target — outside the fixture cwd, so it defers
+	defer("rm -rf ~/x");
+	assert.equal(eligible("rm -rf sub/../sub").kind, "eligible"); // plain tilde-free target still fine
+});
+
 test("a backgrounded write across a newline does not count for the parent", () => {
 	// bash: the parent X stays /etc after the backgrounded write dies
 	deny(["X=/etc", "X=dist &", "rm -rf $X"].join("\n"));

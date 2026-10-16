@@ -45,12 +45,14 @@ const SCRIPT_INTERPRETERS = new Set([
  *   command and fails — so `I=bash; I <<EOF` stays a data heredoc.
  */
 function heredocFeedsInterpreter(command: string, heredocStart: number): boolean {
-	// A line ending in a backslash, a pipe, or `&&` is a bash continuation:
-	// the logical statement spans several physical lines, so the window must
-	// join them. A trailing single `&` is a background boundary, not a join.
+	// A line ending in a backslash or a pipe is a bash continuation: the
+	// logical statement spans several physical lines, so the window must join
+	// them. A trailing `&&` does NOT join here — its left operand is a
+	// separate command whose stdin is not the heredoc — and a trailing single
+	// `&` is a background boundary.
 	const joins = (s: string) => {
 		const t = s.replace(/\s+$/, "");
-		return t.endsWith("\\") || t.endsWith("|") || t.endsWith("&&");
+		return t.endsWith("\\") || t.endsWith("|");
 	};
 	let lineStart = command.lastIndexOf("\n", heredocStart) + 1;
 	while (lineStart >= 2 && joins(command.slice(lineStart - 2 > 0 ? lineStart - 2 : 0, lineStart - 1))) {
@@ -132,7 +134,7 @@ function redirectionKind(token: string): "attached" | "next" | "defer" | "none" 
 
 export type Sep = "" | ";" | "\n" | "&&" | "||" | "|" | "&";
 
-export interface Segment {
+interface Segment {
 	text: string;
 	/** separator that preceded this segment; "" for the first one */
 	sepBefore: Sep;
@@ -249,9 +251,11 @@ function extractSubstitutions(segment: string): { remainder: string; inners: str
 			remainder += ch;
 			continue;
 		}
-		if ((ch === "$" && segment[i + 1] === "(") || ch === "`") {
+		if ((ch === "$" && segment[i + 1] === "(") || ch === "`" || ((ch === "<" || ch === ">") && segment[i + 1] === "(")) {
+			// process substitutions (<(cmd), >(cmd)) run their inner command, so
+			// they are treated like command substitutions for scanning
 			const closer = ch === "`" ? "`" : ")";
-			const opener = ch === "`" ? "`" : "$(";
+			const opener = ch === "`" ? "`" : segment[i] + "(";
 			let depth = 1;
 			let inner = "";
 			i += opener.length;
@@ -514,7 +518,7 @@ function subshellSpan(text: string, start: number): { inner: string; end: number
 function heredocInvokesRm(body: string): boolean {
 	let i = 0;
 	while (i < body.length) {
-		if (body[i] === "$" && body[i + 1] === "(") {
+		if ((body[i] === "$" || body[i] === "<" || body[i] === ">") && body[i + 1] === "(") {
 			const span = subshellSpan(body, i + 2);
 			if (invokesRm(span.inner)) return true;
 			i = span.end;
@@ -681,6 +685,11 @@ function analyzeSegment(
 			continue;
 		}
 		const expanded = expandTilde(commandWord(token), home);
+		if (token.startsWith("~") && token !== "~" && !token.startsWith("~/")) {
+			// ~user, ~+, ~- expand to paths the gate cannot place: root's home,
+			// the cwd, a prior directory — outside or unjudgeable
+			return { defer: `target expands via unhandled tilde form: ${token}` };
+		}
 		const substituted = substituteVars(expanded, snapshot.vars, home);
 		if (snapshot.poisoned && /\$/.test(token)) {
 			// an IFS= write changes field splitting: X=delme:/etc can expand to

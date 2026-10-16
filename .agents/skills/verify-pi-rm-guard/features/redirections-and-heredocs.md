@@ -28,7 +28,9 @@ Two shell constructs that do not affect what an `rm` deletes:
   bash looks it up as a command and fails — so `I=bash; I <<EOF` stays a data
   heredoc. **Here-strings** (`<<<`) follow the same rule: the word fed to an
   interpreter executes (`bash <<< 'rm -rf /'` auto-denies), while a
-  data-consumer here-string stays inert (`cat <<< 'rm -rf /etc'` absent).
+  data-consumer here-string stays inert (`cat <<< 'rm -rf /etc'` absent). The
+  consumer window joins continuation lines ending in `\` or `|`; a trailing
+  `&&` does not join (its left operand never feeds the heredoc onward).
 
 Terminator matching is strict (a line must be exactly the delimiter; `<<-`
 allows leading tabs) — a line like `EOF; rm -rf dist` does not terminate a
