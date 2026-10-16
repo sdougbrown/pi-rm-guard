@@ -34,11 +34,22 @@ const SCRIPT_INTERPRETERS = new Set([
 
 /** Whether the segment opening a heredoc names a stdin script consumer. */
 function heredocFeedsInterpreter(command: string, heredocStart: number): boolean {
-	const lineStart = command.lastIndexOf("\n", heredocStart) + 1;
-	const lineEnd = command.indexOf("\n", heredocStart);
+	// A backslash-newline is a bash continuation, so the logical line can span
+	// several physical ones — widen the window across any continuations.
+	let lineStart = command.lastIndexOf("\n", heredocStart) + 1;
+	while (lineStart >= 2 && command[lineStart - 2] === "\\") {
+		lineStart = command.lastIndexOf("\n", lineStart - 2) + 1;
+	}
+	let lineEnd = command.indexOf("\n", heredocStart);
+	while (lineEnd !== -1 && command[lineEnd - 1] === "\\") {
+		lineEnd = command.indexOf("\n", lineEnd + 1);
+	}
 	const line = command.slice(lineStart, lineEnd === -1 ? command.length : lineEnd);
 	const tokens = line.split(/[;|&<>]+/).flatMap((part) => part.split(/\s+/));
-	return tokens.some((token) => SCRIPT_INTERPRETERS.has(token.replace(/^.*\//, "")));
+	return tokens.some((token) => {
+		const bare = token.replace(/^["']+|["']+$/g, "");
+		return SCRIPT_INTERPRETERS.has(bare.replace(/^.*\//, ""));
+	});
 }
 
 function hasUnresolvableChars(token: string): boolean {

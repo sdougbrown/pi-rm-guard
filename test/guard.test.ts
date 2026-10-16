@@ -200,6 +200,16 @@ test("a heredoc feeding a script interpreter is judged, not skipped", () => {
 		eligible(["cat <<EOF | bash", "rm -rf /tmp/x", "EOF", "ls"].join("\n")).kind,
 		"eligible",
 	);
+	// quoted and path-prefixed interpreter names, and backslash continuations,
+	// are still script consumers
+	deny(['"bash" <<EOF', "rm -rf /", "EOF", "ls"].join("\n"));
+	deny(["'/bin/bash' <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
+	assert.equal(
+		eligible(["/usr/bin/bash <<'EOF'", "rm -rf /tmp/x", "EOF", "ls"].join("\n")).kind,
+		"eligible",
+		"path-prefixed interpreter",
+	);
+	deny(["bash \\", "<<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
 	absent(["python <<'EOF'", "print('hi')", "EOF", "ls"].join("\n"));
 });
 
