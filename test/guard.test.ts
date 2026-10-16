@@ -81,19 +81,36 @@ test("last assignment wins and stays scope-checked", () => {
 });
 
 test("assignments apply in command order, so a later one cannot mask the value at the rm", () => {
-	// bash expands $X to /etc at the rm; the later dist assignment runs after
+	// bash expands $X to /etc at the rm; the later dist write runs after
 	deny("X=/etc; rm -rf $X; X=dist");
 	// no assignment before the rm: $X is unresolvable and defers
 	defer("rm -rf -- $X; X=/etc");
 	defer("rm -rf $X; X=dist");
-	// the prefix-assignment form expands with the old value, so it defers
-	defer("X=dist rm -rf $X");
+	// short-circuit: the guarded write may never execute
+	deny("X=/etc; false && X=dist; rm -rf $X");
+	// pipeline and background components run in subshells: the write dies there
+	deny("X=/etc; X=dist | rm -rf $X");
+	deny("X=/etc; X=dist & rm -rf $X");
+	// a rejected write still executes in bash and clobbers the earlier literal
+	defer("X=/etc; X=$OTHER; rm -rf $X");
+	defer("X=/etc; X=a b; rm -rf $X");
+	// interpreter-heredoc bodies run in a child shell: their assignments never
+	// reach the parent timeline
+	deny(["X=/etc; bash <<EOF", "X=dist", "EOF", "rm -rf $X"].join("\n"));
 });
 
 test("assignment values that word-split are not substituted", () => {
 	// bash would run `rm -rf my dir` — two arguments, not one target
 	defer("WT=my dir; rm -rf $WT");
-	defer("X=dist rm -rf y; rm -rf $X");
+	// IFS=: makes X=delme:/etc two arguments in bash
+	defer("IFS=:; X=delme:/etc; rm -rf $X");
+});
+
+test("HOME assignment shadows the environment value only from that point on", () => {
+	deny("rm -rf $HOME; HOME=/tmp/x");
+	assert.equal(eligible("HOME=./sub; rm -rf $HOME").kind, "eligible");
+	// both writes precede their rms: normal flow stays judgeable
+	assert.equal(eligible("X=dist; rm -rf $X; X=dist2; rm -rf $X").kind, "eligible");
 });
 
 test("quoted rm mentions in non-rm commands pass through untouched", () => {

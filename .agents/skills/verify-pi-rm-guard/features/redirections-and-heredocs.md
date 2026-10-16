@@ -18,9 +18,11 @@ Two shell constructs that do not affect what an `rm` deletes:
 - **The exception is a heredoc consumed by a stdin script interpreter** —
   `bash`, `sh`, `python`, `node`, `awk`, `ssh`, and their family, anywhere in
   the opening line (so `cat <<EOF | bash` counts). That body executes as a
-  script, so it is left unextracted and judged as live text: `bash <<'EOF'`
-  with an `rm -rf /` body auto-denies, a benign script body stays absent,
-  and an in-scope `rm -rf /tmp/x` body goes to the model.
+  script, so it is extracted and judged on its own, in its own child-shell
+  scope: `bash <<'EOF'` with an `rm -rf /` body auto-denies, a benign
+  script body stays absent, an in-scope `rm -rf /tmp/x` body goes to the
+  model, and assignments inside the body never reach the parent command's
+  variable timeline.
 
 Terminator matching is strict (a line must be exactly the delimiter; `<<-`
 allows leading tabs) — a line like `EOF; rm -rf dist` does not terminate a

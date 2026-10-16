@@ -93,15 +93,27 @@ function redirectionKind(token: string): "attached" | "next" | "defer" | "none" 
 	return hasUnresolvableChars(word) ? "defer" : "attached";
 }
 
+export type Sep = "" | ";" | "\n" | "&&" | "||" | "|" | "&";
+
+export interface Segment {
+	text: string;
+	/** separator that preceded this segment; "" for the first one */
+	sepBefore: Sep;
+}
+
 /**
- * Split on ; && || | and newlines, respecting quotes and command substitutions
- * (a `|` inside `$(...)` or a quoted string is not a separator).
+ * Split on ; && || | & and newlines, respecting quotes and command
+ * substitutions (a `|` inside `$(...)` or a quoted string is not a separator).
+ * Each segment carries the separator that preceded it — bash scoping depends
+ * on the kind: pipeline and background components run in subshells, and
+ * `&&`/`||`-guarded commands may never execute.
  */
-function splitSegments(command: string): string[] {
-	const out: string[] = [];
+function splitSegments(command: string): Segment[] {
+	const out: Segment[] = [];
 	let current = "";
 	let quote: string | null = null;
 	let paren = 0;
+	let pendingSep: Sep = "";
 	for (let i = 0; i < command.length; i++) {
 		const ch = command[i];
 		if (quote) {
@@ -141,14 +153,15 @@ function splitSegments(command: string): string[] {
 			continue;
 		}
 		if (paren === 0 && (ch === ";" || ch === "|" || ch === "&" || ch === "\n")) {
-			if (current.trim().length > 0) out.push(current.trim());
+			if (current.trim().length > 0) out.push({ text: current.trim(), sepBefore: pendingSep });
 			current = "";
+			pendingSep = (ch === "|" || ch === "&") && command[i + 1] === ch ? (ch + ch) as Sep : (ch as Sep);
 			if ((ch === "|" || ch === "&") && command[i + 1] === ch) i++;
 			continue;
 		}
 		current += ch;
 	}
-	if (current.trim().length > 0) out.push(current.trim());
+	if (current.trim().length > 0) out.push({ text: current.trim(), sepBefore: pendingSep });
 	return out;
 }
 
@@ -292,9 +305,10 @@ function parseHeredoc(command: string, start: number): ParsedHeredoc | null {
  * untouched; their text is judged through the normal rules, which can only
  * over-gate it.
  */
-function extractHeredocs(command: string): { remainder: string; expansionBodies: string[] } {
+function extractHeredocs(command: string): { remainder: string; expansionBodies: string[]; scriptBodies: string[] } {
 	let out = "";
 	const expansionBodies: string[] = [];
+	const scriptBodies: string[] = [];
 	let quote: string | null = null;
 	let paren = 0;
 	let backticks = false;
@@ -360,8 +374,12 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 			command[i - 1] !== "<"
 		) {
 			const parsed = parseHeredoc(command, i);
-			if (parsed && !heredocFeedsInterpreter(command, i)) {
-				if (!parsed.quoted) expansionBodies.push(parsed.body);
+			if (parsed) {
+				// An interpreter-fed body executes as a script: keep it out of the
+				// parent command entirely — its assignments run in a child shell —
+				// and judge it on its own below, as a script.
+				if (heredocFeedsInterpreter(command, i)) scriptBodies.push(parsed.body);
+				else if (!parsed.quoted) expansionBodies.push(parsed.body);
 				pendingSkip = parsed.skipTo;
 				i = parsed.afterDelimiter;
 				continue;
@@ -370,7 +388,7 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 		out += ch;
 		i++;
 	}
-	return { remainder: out, expansionBodies };
+	return { remainder: out, expansionBodies, scriptBodies };
 }
 
 /**
@@ -456,20 +474,44 @@ function invokesRm(command: string): boolean {
 	return inners.some((inner) => invokesRm(inner));
 }
 
+interface VarSnapshot {
+	vars: Map<string, string>;
+	/** an IFS= assignment appeared at or before this segment: any later
+	 * variable expansion can field-split into several arguments */
+	poisoned: boolean;
+}
+
 /**
- * Literal assignments per segment position. A value counts only for rm
- * segments that come after it — bash expands $X with the value it holds at
- * that point — and last write before the rm wins. A value containing
- * whitespace is rejected: bash word-splits it into several arguments, so a
- * single resolved target would misstate the command.
+ * Literal assignments per segment position, following bash scoping:
+ *
+ * - a value counts only for rm segments after it — bash expands $X with the
+ *   value it holds at that point; last write before the rm wins
+ * - only main-shell writes that actually run count: pipeline and background
+ *   components die in subshells, `&&`/`||`-guarded writes may never execute
+ * - a write that runs but cannot be resolved (expansions, word-splitting
+ *   values) unresolves the name — it clobbers any earlier literal value
+ * - a value containing whitespace is never substituted: bash word-splits it
+ *   into several arguments, so one resolved target would misstate the command
+ * - any IFS= write poisons later variable substitution: field splitting
+ *   changes how a value expands
  */
-function varsBySegment(segments: string[]): Map<string, string>[] {
-	const out: Map<string, string>[] = [];
+function varsBySegment(segments: Segment[]): VarSnapshot[] {
+	const out: VarSnapshot[] = [];
 	const vars = new Map<string, string>();
-	for (const segment of segments) {
-		out.push(new Map(vars));
-		const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(segment);
-		if (match && !hasUnresolvableChars(match[2]) && !/\s/.test(match[2])) vars.set(match[1], match[2]);
+	let poisoned = false;
+	for (const [i, seg] of segments.entries()) {
+		out.push({ vars: new Map(vars), poisoned });
+		const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(seg.text);
+		if (!match) continue;
+		if (match[1] === "IFS") {
+			poisoned = true;
+			continue;
+		}
+		const sepAfter = i + 1 < segments.length ? segments[i + 1].sepBefore : "end";
+		const mainShell = ["", ";", "\n", "&"].includes(seg.sepBefore) && ["end", ";", "\n", "&&", "||"].includes(sepAfter as string);
+		if (!mainShell) continue;
+		if (!hasUnresolvableChars(match[2]) && !/\s/.test(match[2])) vars.set(match[1], match[2]);
+		else vars.delete(match[1]);
 	}
 	return out;
 }
@@ -493,7 +535,11 @@ function expandTilde(target: string, home: string): string {
  * Judge one rm segment. Returns its literal targets or a defer reason.
  * Targets are returned unexpanded; path resolution happens in isTargetInScope.
  */
-function analyzeSegment(segment: string, home: string, vars: Map<string, string>): { targets: string[] } | { defer: string } {
+function analyzeSegment(
+	segment: string,
+	home: string,
+	snapshot: VarSnapshot,
+): { targets: string[] } | { defer: string } {
 	const tokens = segment.split(/\s+/).filter(Boolean);
 	let i = 0;
 	if (tokens[i] !== "rm" && !tokens[i].endsWith("/rm")) {
@@ -532,7 +578,12 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 			continue;
 		}
 		const expanded = expandTilde(token, home);
-		const substituted = substituteVars(expanded, vars, home);
+		const substituted = substituteVars(expanded, snapshot.vars, home);
+		if (snapshot.poisoned && /\$/.test(token)) {
+			// an IFS= write changes field splitting: X=delme:/etc can expand to
+			// several arguments, so the resolved target would misstate the command
+			return { defer: `variable expansion under a changed IFS: ${token}` };
+		}
 		if (!pastDashDash && substituted.startsWith("-")) {
 			// a variable can carry a flag into target position: X=-rf; rm $X /etc.
 			// After `--` every token is an operand, so the check stops there.
@@ -648,9 +699,11 @@ export type CommandVerdict =
 
 export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	const home = process.env.HOME ?? "";
-	const { remainder, expansionBodies } = extractHeredocs(command);
+	const { remainder, expansionBodies, scriptBodies } = extractHeredocs(command);
 	const segments = splitSegments(remainder);
-	if (segments.length === 0 && expansionBodies.length === 0) return { kind: "defer", reason: "empty command" };
+	if (segments.length === 0 && expansionBodies.length === 0 && scriptBodies.length === 0) {
+		return { kind: "defer", reason: "empty command" };
+	}
 
 	let sawRecursive = false;
 	let sawPlainRm = false;
@@ -666,7 +719,8 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 		}
 	}
 
-	for (const [index, segment] of segments.entries()) {
+	for (const [index, seg] of segments.entries()) {
+		const segment = seg.text;
 		const stripped = stripQuoted(segment);
 		if (stripped === null) {
 			// Unbalanced quoting: a quoted "rm -rf" mention is harmless, but we
@@ -722,6 +776,20 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 				reason = "rm inside a command substitution";
 				break;
 			}
+		}
+	}
+
+	// An interpreter-fed heredoc body is a script: judge it on its own, in its
+	// own child-shell scope — its assignments never reach the parent timeline.
+	for (const body of scriptBodies) {
+		const sub = analyzeCommand(body, cwd);
+		if (sub.kind === "deny") return sub;
+		if (sub.kind === "defer") {
+			rmDeferred = true;
+			reason ||= sub.reason;
+		} else if (sub.kind === "eligible") {
+			sawRecursive = true;
+			targets.push(...sub.targets);
 		}
 	}
 
