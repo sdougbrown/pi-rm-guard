@@ -115,8 +115,47 @@ test("mixed recursive and non-recursive rm defers", () => {
 	defer("rm -rf dist && rm notes.txt");
 });
 
-test("redirections and mixed-gate constructs defer", () => {
-	defer("rm -rf dist > /dev/null");
+test("redirection tokens around a recursive rm are inert", () => {
+	assert.equal(eligible("rm -rf dist 2>/dev/null").kind, "eligible");
+	assert.equal(eligible("rm -rf dist > /dev/null").kind, "eligible");
+	assert.equal(eligible("rm -rf dist >>build.log").kind, "eligible");
+	assert.equal(eligible("rm -rf dist 2>&1").kind, "eligible");
+	assert.equal(eligible("rm -rf dist </dev/null").kind, "eligible");
+	assert.equal(eligible("rm -rf dist < /dev/null").kind, "eligible");
+	assert.equal(eligible("rm -rf dist 2>/dev/null; echo done").kind, "eligible");
+});
+
+test("redirection words with expansions defer", () => {
+	defer("rm -rf dist 2>$(mktemp)");
+	defer("rm -rf dist > `pwd`/log");
+});
+
+test("quoted heredoc bodies are data, not shell", () => {
+	// prompt-shaped: apostrophe in a comment plus a bare rm word inside the body
+	const comment = ["cat > /tmp/x <<'EOF'", "// what the user's rm segment is, roughly:", "echo done", "EOF", "node /tmp/x"].join("\n");
+	absent(comment);
+	// prompt-shaped: rm with a redirection inside a template literal in the body
+	const bodyRm = ["cat > /tmp/x <<'EOF'", 'const cmd = `ln -sfn a b && rm x 2>/dev/null; ls y | grep -i "c"`;', "EOF", "node /tmp/x"].join("\n");
+	absent(bodyRm);
+	// even a literal "rm -rf /" in a quoted body never executes
+	absent(["cat > /tmp/x <<'EOF'", "rm -rf /", "EOF", "echo done"].join("\n"));
+	// heredoc text is skipped but a live rm in the same command is still judged
+	assert.equal(eligible(["cat > /tmp/x <<'EOF'", "rm -rf ~", "EOF", "rm -rf dist"].join("\n")).kind, "eligible");
+	// <<"EOF" quoted delimiter, and <<- with a tab-indented terminator
+	absent(["cat > /tmp/x <<\"EOF\"", "rm -rf /etc", "EOF", "ls"].join("\n"));
+	absent(["cat > /tmp/x <<-EOF", "\trm -rf /etc", "\tEOF", "ls"].join("\n"));
+});
+
+test("unquoted heredoc bodies run substitutions, so rm inside defers", () => {
+	defer(["cat <<EOF", "$(rm -rf /tmp/x)", "EOF", "ls"].join("\n"));
+	defer(["cat <<EOF", "`rm -rf ~`", "EOF", "ls"].join("\n"));
+});
+
+test("heredoc delimiters without a terminator consume the rest as body", () => {
+	absent(["cat <<'EOF'", "rm -rf /", "echo never-a-terminator"].join("\n"));
+});
+
+test("mixed-gate constructs without heredocs keep their verdicts", () => {
 	defer("cd build && rm -rf .");
 });
 

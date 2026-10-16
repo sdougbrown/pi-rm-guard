@@ -9,6 +9,10 @@
 - Anything the gate cannot resolve — `$VAR` with no literal assignment, globs
   (`*`, `?`), quoted targets, command substitution, backticks — defers to a
   human (in print mode: fails closed with a block).
+- Redirection operators (`2>/dev/null`, `2>&1`) are inert: their word never
+  enters rm's argv. Heredoc bodies are data — quoted delimiters are skipped
+  entirely; unquoted bodies are scanned for substitutions that invoke rm.
+  See `redirections-and-heredocs.md`.
 - Scope: targets must resolve (physically, per path component) inside the
   session cwd or `/tmp`; symlink escapes (`leak` → `$HOME/.ssh`,
   `link/../etc`) cannot pass.
@@ -30,6 +34,8 @@ D='{"action":"A","probabilities":{"A":0.95,"B":0.03,"C":0.02}}'
 $H/run-case.sh eligible-literal 'rm -rf /tmp/rmguard-verify-victim' "$D"
 $H/run-case.sh defer-glob       'rm -rf /tmp/rmguard-verify-vic*'   "$D"
 $H/run-case.sh defer-var        'rm -rf $SOME_VAR'                  "$D"
+$H/run-case.sh approve-redirect 'rm -rf /tmp/rmguard-verify-victim 2>/dev/null' "$D"
+$H/run-case.sh heredoc-sub      "$(printf 'cat <<EOF\n$(rm -rf /tmp/rmguard-verify-victim/marker)\nEOF')" "$D"
 ```
 
 ## Gotchas

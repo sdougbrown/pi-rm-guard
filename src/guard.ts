@@ -3,8 +3,11 @@ import path from "node:path";
 
 /**
  * Static analysis for recursive `rm` commands. Every unresolvable construct
- * (variables, globs, quotes, redirections, non-rm segments) forces a defer to
- * human approval — this module never widens what it can judge.
+ * (variables, globs, quotes, unparsed redirections, non-rm segments) forces a
+ * defer to human approval — this module never widens what it can judge.
+ * Redirection operators are inert (their word never enters rm's argv) and
+ * heredoc bodies are data, not shell — except that an unquoted heredoc body
+ * still runs command substitutions, which are scanned.
  */
 
 export interface EligibleRm {
@@ -30,6 +33,26 @@ function isRecursiveFlag(token: string): boolean {
 
 function isFlag(token: string): boolean {
 	return token.startsWith("-") && token !== "-";
+}
+
+const REDIRECT_RE = /^(\d*)(>>?|&>|<)(&\d+)?(.*)$/;
+
+/**
+ * POSIX redirection operators ([n]>word, [n]>>word, [n]<word, fd duplication
+ * like 2>&1, and bash's &>word). The redirected-to word never enters rm's
+ * argv and deletes nothing, so a clean word is inert for the gate. A word
+ * with expansions still defers: its text could hide a command substitution
+ * that executes. Returns "attached" (skip this token), "next" (skip this
+ * token and the following one is the word), "defer", or "none" (not a
+ * redirection).
+ */
+function redirectionKind(token: string): "attached" | "next" | "defer" | "none" {
+	const m = REDIRECT_RE.exec(token);
+	if (!m) return "none";
+	if (m[3]) return "attached";
+	const word = m[4];
+	if (word === "") return "next";
+	return hasUnresolvableChars(word) ? "defer" : "attached";
 }
 
 /**
@@ -71,6 +94,11 @@ function splitSegments(command: string): string[] {
 		}
 		if (ch === ")" && paren > 0) {
 			paren--;
+			current += ch;
+			continue;
+		}
+		if (paren === 0 && ch === "&" && (command[i + 1] === ">" || /[<>]$/.test(current))) {
+			// `&` inside a redirection operator (2>&1, >&2, &>file) is not a separator
 			current += ch;
 			continue;
 		}
@@ -149,6 +177,188 @@ function extractSubstitutions(segment: string): { remainder: string; inners: str
 	return { remainder, inners };
 }
 
+interface ParsedHeredoc {
+	/** resume scanning live text immediately after the delimiter token */
+	afterDelimiter: number;
+	/** jump here at the next top-level newline: body + terminator; -1 = no body */
+	skipTo: number;
+	quoted: boolean;
+	body: string;
+}
+
+/**
+ * Parse one `<<[-]DELIM` heredoc starting at the first `<`. Strict POSIX body
+ * rules: the terminator is a line consisting of exactly DELIM (leading tabs
+ * allowed with <<-). A missing terminator consumes the rest of the command
+ * as body — which is also what bash does, since it keeps waiting for input.
+ */
+function parseHeredoc(command: string, start: number): ParsedHeredoc | null {
+	let i = start + 2; // past <<
+	let stripTabs = false;
+	if (command[i] === "-") {
+		stripTabs = true;
+		i++;
+	}
+	while (command[i] === " " || command[i] === "\t") i++;
+
+	let delimiter = "";
+	let quoted = false;
+	if (command[i] === "'" || command[i] === '"') {
+		const close = command.indexOf(command[i], i + 1);
+		if (close === -1) return null; // unterminated quote: not parseable, stay conservative
+		delimiter = command.slice(i + 1, close);
+		quoted = true;
+		i = close + 1;
+	} else {
+		const wordStart = i;
+		while (i < command.length && !/[\s;&|)<>]/.test(command[i])) i++;
+		delimiter = command.slice(wordStart, i);
+		if (delimiter === "") return null; // no delimiter word: leave `<<` as literal text
+	}
+
+	const newline = command.indexOf("\n", i);
+	if (newline === -1) {
+		// no body ever arrives: the operator waits for stdin and the command ends
+		return { afterDelimiter: i, skipTo: -1, quoted, body: "" };
+	}
+
+	let pos = newline + 1;
+	while (pos <= command.length) {
+		const nl = command.indexOf("\n", pos);
+		const lineEnd = nl === -1 ? command.length : nl;
+		const line = command.slice(pos, lineEnd);
+		const candidate = stripTabs ? line.replace(/^\t+/, "") : line;
+		if (candidate === delimiter) {
+			return { afterDelimiter: i, skipTo: lineEnd + 1, quoted, body: command.slice(newline + 1, pos) };
+		}
+		if (nl === -1) break;
+		pos = nl + 1;
+	}
+		// unterminated: everything after the opening line is body
+	return { afterDelimiter: i, skipTo: command.length, quoted, body: command.slice(newline + 1) };
+}
+
+/**
+ * Remove heredoc bodies from the command: they are data written to stdin,
+ * never commands. Quoted delimiters (`<<'EOF'`) make the body fully literal,
+ * so it is inert. Unquoted delimiters keep command/parameter expansion in
+ * the body, so those bodies are returned and must be scanned for executing
+ * substitutions. Heredocs inside quotes or substitutions are left untouched
+ * and defer through the normal unresolvable rules instead.
+ */
+function extractHeredocs(command: string): { remainder: string; expansionBodies: string[] } {
+	let out = "";
+	const expansionBodies: string[] = [];
+	let quote: string | null = null;
+	let paren = 0;
+	let backticks = false;
+	let pendingSkip = -1;
+	let i = 0;
+	while (i < command.length) {
+		const ch = command[i];
+		if (quote) {
+			out += ch;
+			if (ch === quote) quote = null;
+			i++;
+			continue;
+		}
+		if (ch === "'" || ch === '"') {
+			quote = ch;
+			out += ch;
+			i++;
+			continue;
+		}
+		if (ch === "\\" && i + 1 < command.length) {
+			out += ch + command[i + 1];
+			i += 2;
+			continue;
+		}
+		if (ch === "`") {
+			backticks = !backticks;
+			out += ch;
+			i++;
+			continue;
+		}
+		if (ch === "$" && command[i + 1] === "(") {
+			paren++;
+			out += "$(";
+			i += 2;
+			continue;
+		}
+		if (ch === "(" && paren > 0) {
+			paren++;
+			out += ch;
+			i++;
+			continue;
+		}
+		if (ch === ")" && paren > 0) {
+			paren--;
+			out += ch;
+			i++;
+			continue;
+		}
+		if (ch === "\n" && pendingSkip !== -1) {
+			out += "\n";
+			i = pendingSkip;
+			pendingSkip = -1;
+			continue;
+		}
+		if (
+			paren === 0 &&
+			!backticks &&
+			ch === "<" &&
+			command[i + 1] === "<" &&
+			command[i + 2] !== "<" &&
+			command[i - 1] !== "<"
+		) {
+			const parsed = parseHeredoc(command, i);
+			if (parsed) {
+				if (!parsed.quoted) expansionBodies.push(parsed.body);
+				pendingSkip = parsed.skipTo;
+				i = parsed.afterDelimiter;
+				continue;
+			}
+		}
+		out += ch;
+		i++;
+	}
+	return { remainder: out, expansionBodies };
+}
+
+/**
+ * Quote-blind scan of an unquoted heredoc body for command substitutions.
+ * Quotes are literal data inside heredocs, so `$(...)` inside `"..."` still
+ * executes and must not be skipped.
+ */
+function heredocInvokesRm(body: string): boolean {
+	let i = 0;
+	while (i < body.length) {
+		if (body[i] === "$" && body[i + 1] === "(") {
+			let depth = 1;
+			let inner = "";
+			let j = i + 2;
+			while (j < body.length && depth > 0) {
+				if (body[j] === "(") depth++;
+				else if (body[j] === ")") depth--;
+				if (depth > 0) inner += body[j];
+				j++;
+			}
+			if (invokesRm(inner)) return true;
+			i = j;
+			continue;
+		}
+		if (body[i] === "`") {
+			const close = body.indexOf("`", i + 1);
+			const end = close === -1 ? body.length : close;
+			if (invokesRm(body.slice(i + 1, end))) return true;
+			i = close === -1 ? body.length : close + 1;
+			continue;
+		}
+		i++;
+	}
+	return false;
+}
+
 /** Whether a command string (no quotes assumed) invokes rm as a command token. */
 function hasRmToken(command: string): boolean {
 	return command
@@ -216,6 +426,17 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 		if (!pastDashDash && token === "--") {
 			pastDashDash = true;
 			continue;
+		}
+		const redir = redirectionKind(token);
+		if (redir === "attached") continue;
+		if (redir === "defer") return { defer: `redirection is not statically resolvable: ${token}` };
+		if (redir === "next") {
+			const word = tokens[i + 1];
+			if (word === undefined || !hasUnresolvableChars(word)) {
+				i++;
+				continue;
+			}
+			return { defer: `redirection is not statically resolvable: ${word}` };
 		}
 		if (!pastDashDash && isFlag(token)) {
 			if (hasUnresolvableChars(token)) return { defer: `flag with expansion chars: ${token}` };
@@ -326,8 +547,9 @@ export type CommandVerdict =
 
 export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	const home = process.env.HOME ?? "";
-	const segments = splitSegments(command);
-	if (segments.length === 0) return { kind: "defer", reason: "empty command" };
+	const { remainder, expansionBodies } = extractHeredocs(command);
+	const segments = splitSegments(remainder);
+	if (segments.length === 0 && expansionBodies.length === 0) return { kind: "defer", reason: "empty command" };
 
 	let sawRecursive = false;
 	let sawPlainRm = false;
@@ -335,6 +557,13 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	let reason = "";
 	const vars = literalAssignments(segments);
 	const targets: string[] = [];
+
+	for (const body of expansionBodies) {
+		if (heredocInvokesRm(body)) {
+			rmDeferred = true;
+			reason = "rm inside a command substitution";
+		}
+	}
 
 	for (const segment of segments) {
 		const stripped = stripQuoted(segment);

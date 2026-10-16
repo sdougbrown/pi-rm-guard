@@ -117,6 +117,9 @@ expectation_for() {
 	case "$1" in
 		approve)          echo "DELETED|action=approve autoApproved=true|1" ;;
 		eligible-literal) echo "DELETED|action=approve autoApproved=true|1" ;;
+		approve-redirect) echo "DELETED|action=approve autoApproved=true|1" ;;
+		heredoc-quoted)   echo "SURVIVED|absent|0" ;;
+		heredoc-sub)      echo "SURVIVED|gate=ineligible|0" ;;
 		low-conf)         echo "SURVIVED|gate=low-confidence autoApproved=false|1" ;;
 		deny|deny-root)   echo "SURVIVED|gate=denied|0" ;;
 		defer|defer-glob|defer-var|glob-unbounded) echo "SURVIVED|gate=ineligible|0" ;;

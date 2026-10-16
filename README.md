@@ -16,8 +16,13 @@ string) pass through untouched. Recursive `rm` invocations must have fully
 literal targets:
 
 - **Statically resolvable targets only** — variable indirection (`$CACHE_DIR`),
-  globs, quoted targets, command substitution, and redirections defer to a
-  human. Exception: literal assignments earlier in the same command
+  globs, quoted targets, and command substitution defer to a human. Redirection
+  operators (`2>/dev/null`, `2>&1`, `> log`) never enter rm's argv, so a clean
+  one is inert; a redirection word with expansions still defers. Heredoc bodies
+  are data, not shell: a quoted delimiter (`<<'EOF'`) makes the body fully
+  inert, while an unquoted body still runs substitutions, which are scanned
+  and defer when they invoke rm. Exception: literal assignments earlier in the
+  same command
   (`WT=/tmp/x; rm -rf $WT`) are substituted and checked like any literal path.
 - **`git rm --cached` is index-only** — it does not touch the disk, so segments
   containing it are inert; `git rm` without `--cached` still defers.

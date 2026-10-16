@@ -14,3 +14,6 @@ source — update a file in the same change that alters the behavior.
 - `non-recursive-rm.md` — plain rm passes through untouched (pi's normal flow)
 - `git-rm-cached.md` — `git rm --cached` is index-only, so segments containing
   it pass through with no gate entry; `git rm` without `--cached` still defers
+- `redirections-and-heredocs.md` — redirection operators are inert around an
+  rm (their word never enters its argv); heredoc bodies are data, quoted
+  delimiters fully inert, unquoted bodies still scanned for substitutions

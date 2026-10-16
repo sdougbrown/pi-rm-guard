@@ -69,8 +69,8 @@ The harness recipe, in `run-case.sh`:
 - the tool call the "model" issues is exactly the `<command>` argument.
 
 The four primary mapped cases (one command each; the expectation table in the
-harness also maps `eligible-literal`, `low-conf`, `deny-root`, `defer-var`, and
-`glob-unbounded`):
+harness also maps `eligible-literal`, `low-conf`, `deny-root`, `defer-var`,
+`glob-unbounded`, `approve-redirect`, `heredoc-quoted`, and `heredoc-sub`):
 
 ```sh
 H=.agents/skills/verify-pi-rm-guard/helpers
