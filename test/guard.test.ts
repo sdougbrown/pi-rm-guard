@@ -80,6 +80,22 @@ test("last assignment wins and stays scope-checked", () => {
 	deny("WT=/etc; rm -rf $WT");
 });
 
+test("assignments apply in command order, so a later one cannot mask the value at the rm", () => {
+	// bash expands $X to /etc at the rm; the later dist assignment runs after
+	deny("X=/etc; rm -rf $X; X=dist");
+	// no assignment before the rm: $X is unresolvable and defers
+	defer("rm -rf -- $X; X=/etc");
+	defer("rm -rf $X; X=dist");
+	// the prefix-assignment form expands with the old value, so it defers
+	defer("X=dist rm -rf $X");
+});
+
+test("assignment values that word-split are not substituted", () => {
+	// bash would run `rm -rf my dir` — two arguments, not one target
+	defer("WT=my dir; rm -rf $WT");
+	defer("X=dist rm -rf y; rm -rf $X");
+});
+
 test("quoted rm mentions in non-rm commands pass through untouched", () => {
 	absent('grep -rn "rm -rf" src/');
 	absent('echo "run rm -rf to clean up"');

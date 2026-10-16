@@ -4,8 +4,10 @@
 
 - Literal targets (`rm -rf dist`, `rm -rf /tmp/foo/build-123`) are eligible and
   go to the decision model.
-- Variable indirection resolved from literal assignments in the same command
-  (`WT=/tmp/x; rm -rf $WT`) behaves like a literal target.
+- Variable indirection resolved from literal assignments earlier in the same
+  command (`WT=/tmp/x; rm -rf $WT`) behaves like a literal target. A value
+  assigned after the rm does not count, and a value that word-splits is
+  never substituted.
 - Anything the gate cannot resolve — `$VAR` with no literal assignment, globs
   (`*`, `?`), quoted targets, command substitution, backticks — defers to a
   human (in print mode: fails closed with a block).

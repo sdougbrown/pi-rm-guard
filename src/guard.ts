@@ -457,17 +457,21 @@ function invokesRm(command: string): boolean {
 }
 
 /**
- * Literal assignments from earlier segments in the same command (NAME=value,
- * optionally exported). Values with any expansion defer later, so this only
- * ever substitutes text that is literally present in the command itself.
+ * Literal assignments per segment position. A value counts only for rm
+ * segments that come after it — bash expands $X with the value it holds at
+ * that point — and last write before the rm wins. A value containing
+ * whitespace is rejected: bash word-splits it into several arguments, so a
+ * single resolved target would misstate the command.
  */
-function literalAssignments(segments: string[]): Map<string, string> {
+function varsBySegment(segments: string[]): Map<string, string>[] {
+	const out: Map<string, string>[] = [];
 	const vars = new Map<string, string>();
 	for (const segment of segments) {
+		out.push(new Map(vars));
 		const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(segment);
-		if (match && !hasUnresolvableChars(match[2])) vars.set(match[1], match[2]);
+		if (match && !hasUnresolvableChars(match[2]) && !/\s/.test(match[2])) vars.set(match[1], match[2]);
 	}
-	return vars;
+	return out;
 }
 
 function substituteVars(target: string, vars: Map<string, string>, home: string): string | undefined {
@@ -652,7 +656,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	let sawPlainRm = false;
 	let rmDeferred = false;
 	let reason = "";
-	const vars = literalAssignments(segments);
+	const varsBySeg = varsBySegment(segments);
 	const targets: string[] = [];
 
 	for (const body of expansionBodies) {
@@ -662,7 +666,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 		}
 	}
 
-	for (const segment of segments) {
+	for (const [index, segment] of segments.entries()) {
 		const stripped = stripQuoted(segment);
 		if (stripped === null) {
 			// Unbalanced quoting: a quoted "rm -rf" mention is harmless, but we
@@ -678,7 +682,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 		const firstToken = remainder.trim().split(/\s+/)[0] ?? "";
 
 		if (firstToken === "rm" || firstToken.endsWith("/rm")) {
-			const verdict = analyzeSegment(segment, home, vars);
+			const verdict = analyzeSegment(segment, home, varsBySeg[index]);
 			if ("targets" in verdict) {
 				sawRecursive = true;
 				targets.push(...verdict.targets);
