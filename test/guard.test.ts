@@ -63,7 +63,7 @@ test("variable indirection, globs, quotes and substitution defer", () => {
 });
 
 test("literal assignments from the same command are substituted", () => {
-	assert.equal(eligible("WT=/tmp/x; rm -rf $WT").kind, "eligible");
+	assert.deepEqual(eligible("WT=/tmp/x; rm -rf $WT"), { kind: "eligible", targets: ["/tmp/x"] });
 	assert.equal(eligible("WT=./dist; rm -rf $WT").kind, "eligible");
 	assert.equal(eligible("export WT=./dist; rm -rf ${WT}").kind, "eligible");
 });
@@ -133,9 +133,8 @@ test("redirection words are scope-checked as truncation side effects", () => {
 	defer("rm -rf dist 2>/etc/cron.d/x");
 	defer("rm -rf dist >>/etc/passwd");
 	defer("rm -rf dist > ~/x");
-	// harmless and in-scope words keep their verdicts
-	assert.equal(eligible("rm -rf dist 2>/dev/null").kind, "eligible", "dev null redirect");
-	assert.equal(eligible("rm -rf dist >>build.log").kind, "eligible", "in-cwd redirect");
+	// the defer variants carry this test's value; the inert eligible forms
+	// are pinned in the redirection test above
 });
 
 test("quoted rm mentions in non-rm commands pass through untouched", () => {
@@ -196,7 +195,7 @@ test("mixed recursive and non-recursive rm defers", () => {
 });
 
 test("redirection tokens around a recursive rm are inert", () => {
-	assert.equal(eligible("rm -rf dist 2>/dev/null").kind, "eligible", "attached stderr redirect");
+	assert.deepEqual(eligible("rm -rf dist 2>/dev/null"), { kind: "eligible", targets: ["dist"] });
 	assert.equal(eligible("rm -rf dist > /dev/null").kind, "eligible", "separated redirect");
 	assert.equal(eligible("rm -rf dist >>build.log").kind, "eligible", "append redirect");
 	assert.equal(eligible("rm -rf dist 2>&1").kind, "eligible", "fd duplication");
@@ -205,6 +204,7 @@ test("redirection tokens around a recursive rm are inert", () => {
 	assert.equal(eligible("rm -rf dist < /dev/null").kind, "eligible", "separated input redirect");
 	assert.equal(eligible("rm -rf dist 2>/dev/null; echo done").kind, "eligible", "redirect with follow-on segment");
 	assert.equal(eligible("rm -rf -- -dist").kind, "eligible", "literal dash operand after --");
+	assert.deepEqual(eligible("X=dist; rm -rf -- $X"), { kind: "eligible", targets: ["dist"] });
 });
 
 test("redirection words with expansions defer", () => {
@@ -309,6 +309,13 @@ test("heredoc: variable and function consumers are unresolvable, not data", () =
 	// a bare unassigned name is not a variable — bash looks it up as a
 	// command and fails, so the body stays data
 	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
+	// an unresolvable here-string word defers: the expanded script content
+	// is not knowable from its text
+	defer("bash <<< $X");
+	defer('bash <<< `fetch`');
+	defer("X=rm -rf ~; bash <<< $X");
+	// a subshell IFS write cannot change the parent IFS
+	assert.equal(eligible("IFS=: & X=1; rm -rf $X").kind, "eligible", "subshell IFS write");
 });
 
 test("process substitutions run their inner command and defer", () => {

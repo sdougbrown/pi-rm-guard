@@ -6,7 +6,10 @@
   go to the decision model.
 - Variable indirection resolved from literal assignments that run in the
   main shell before the rm (`WT=/tmp/x; rm -rf $WT`) behaves like a literal
-  target. Writes that may not run — `&&`/`||`-guarded, or assignments inside
+  target — and only from the leading run of pure assignments: after the
+  first non-assignment segment, a write may live in a case branch or loop
+  body whose execution is not guaranteed, so it unresolves the name.
+  Writes that may not run — `&&`/`||`-guarded, or assignments inside
   compound commands (`then X=/etc`) — unresolve the name: the value is
   uncertain, not the old one. Writes that die in subshells (pipeline and
   background components, interpreter-heredoc bodies) leave the parent value

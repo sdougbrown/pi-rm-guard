@@ -611,13 +611,13 @@ function varsBySegment(segments: Segment[]): VarSnapshot[] {
 			}
 			continue;
 		}
+		const sepAfter = i + 1 < segments.length ? segments[i + 1].sepBefore : "end";
+		const inSubshell = seg.sepBefore === "|" || sepAfter === "|" || sepAfter === "&";
+		if (inSubshell) continue; // the write dies with the subshell: the parent value stands
 		if (match[1] === "IFS") {
 			poisoned = true;
 			continue;
 		}
-		const sepAfter = i + 1 < segments.length ? segments[i + 1].sepBefore : "end";
-		const inSubshell = seg.sepBefore === "|" || sepAfter === "|" || sepAfter === "&";
-		if (inSubshell) continue; // the write dies with the subshell: the parent value stands
 		if (seg.sepBefore === "&&" || seg.sepBefore === "||" || !prologue) {
 			// the write may never run: the value is uncertain, not the old one
 			vars.delete(match[1]);
@@ -909,7 +909,15 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 
 	// An interpreter-fed heredoc body is a script: judge it on its own, in its
 	// own child-shell scope — its assignments never reach the parent timeline.
+	// An unquoted expansion or backtick in the body makes what the child shell
+	// runs unknowable, so the body defers; quoted content is judged as data.
 	for (const body of scriptBodies) {
+		const strippedBody = stripQuoted(body);
+		if (strippedBody !== null && /[$`]/.test(strippedBody)) {
+			rmDeferred = true;
+			reason = "script content is not statically resolvable";
+			continue;
+		}
 		const sub = analyzeCommand(body, cwd);
 		if (sub.kind === "deny") return sub;
 		if (sub.kind === "defer") {
