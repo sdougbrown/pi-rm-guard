@@ -243,6 +243,12 @@ test("a heredoc feeding a script interpreter is judged, not skipped", () => {
 		"path-prefixed interpreter",
 	);
 	deny(["bash \\", "<<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
+	// variable consumers and defined functions run unknown code with the
+	// body as stdin — judged as scripts; a bare unassigned name is not one
+	// (bash looks it up as a command and fails), so it stays data
+	deny(["I=bash", "$I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
+	deny(["I() { bash; }", "I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
+	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
 	absent(["python <<'EOF'", "print('hi')", "EOF", "ls"].join("\n"));
 });
 

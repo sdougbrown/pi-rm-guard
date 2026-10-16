@@ -17,12 +17,16 @@ Two shell constructs that do not affect what an `rm` deletes:
   substitution invokes rm.
 - **The exception is a heredoc consumed by a stdin script interpreter** —
   `bash`, `sh`, `python`, `node`, `awk`, `ssh`, and their family, anywhere in
-  the opening line (so `cat <<EOF | bash` counts). That body executes as a
-  script, so it is extracted and judged on its own, in its own child-shell
-  scope: `bash <<'EOF'` with an `rm -rf /` body auto-denies, a benign
-  script body stays absent, an in-scope `rm -rf /tmp/x` body goes to the
-  model, and assignments inside the body never reach the parent command's
-  variable timeline.
+  the opening line (so `cat <<EOF | bash` counts), or a consumer that cannot
+  be resolved statically: a variable expansion (`I=bash; $I <<EOF`) or a
+  function defined in the command (`I() { bash; }; I <<EOF`). That body
+  executes as a script, so it is extracted and judged on its own, in its own
+  child-shell scope: `bash <<'EOF'` with an `rm -rf /` body auto-denies, a
+  benign script body stays absent, an in-scope `rm -rf /tmp/x` body goes to
+  the model, and assignments inside the body never reach the parent
+  command's variable timeline. A bare unassigned name is not a variable —
+  bash looks it up as a command and fails — so `I=bash; I <<EOF` stays a data
+  heredoc.
 
 Terminator matching is strict (a line must be exactly the delimiter; `<<-`
 allows leading tabs) — a line like `EOF; rm -rf dist` does not terminate a

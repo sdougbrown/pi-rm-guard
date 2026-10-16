@@ -32,7 +32,18 @@ const SCRIPT_INTERPRETERS = new Set([
 	"php", "lua", "awk", "gawk", "R", "Rscript", "julia", "osascript",
 ]);
 
-/** Whether the segment opening a heredoc names a stdin script consumer. */
+/**
+ * Whether the heredoc's consumer executes its stdin as a script — or cannot
+ * be statically resolved, which is judged the same way. Three classes:
+ * - a literal stdin script interpreter (`bash`, `sh`, `python`, …), anywhere
+ *   in the opening line, so `cat <<EOF | bash` counts
+ * - a variable expansion (`$I <<EOF` with `I=bash`): the consumer is the
+ *   expansion's value
+ * - a function defined in this command (`I() { bash; }; I <<EOF`): the call
+ *   runs the function, which can feed the body to an interpreter. A bare
+ *   unassigned name is NOT resolvable to a variable — bash looks it up as a
+ *   command and fails — so `I=bash; I <<EOF` stays a data heredoc.
+ */
 function heredocFeedsInterpreter(command: string, heredocStart: number): boolean {
 	// A backslash-newline is a bash continuation, so the logical line can span
 	// several physical ones — widen the window across any continuations.
@@ -46,9 +57,12 @@ function heredocFeedsInterpreter(command: string, heredocStart: number): boolean
 	}
 	const line = command.slice(lineStart, lineEnd === -1 ? command.length : lineEnd);
 	const tokens = line.split(/[;|&<>]+/).flatMap((part) => part.split(/\s+/));
+	const functions = new Set<string>();
+	for (const m of command.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{/g)) functions.add(m[1]);
 	return tokens.some((token) => {
+		if (/\$/.test(token)) return true;
 		const bare = token.replace(/^["']+|["']+$/g, "");
-		return SCRIPT_INTERPRETERS.has(bare.replace(/^.*\//, ""));
+		return SCRIPT_INTERPRETERS.has(bare.replace(/^.*\//, "")) || functions.has(bare);
 	});
 }
 
