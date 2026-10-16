@@ -88,6 +88,28 @@ test("quoted rm mentions in non-rm commands pass through untouched", () => {
 	absent("echo 'run rm -rf now'");
 });
 
+test("non-recursive rm is not this gate's business, even with unresolvable targets", () => {
+	// the token loop used to defer on these before ever checking for -r
+	absent("rm -f /tmp/probe.sh /tmp/heredoc-probe /tmp/repro*.ts");
+	absent("rm dist/*.log");
+	absent("rm ~/Code/x*.ts");
+	absent("rm -f dist?build ./.cache[0-9]");
+});
+
+test("non-recursive rm still defers on executing or flag-shaped targets", () => {
+	defer("rm $X"); // a variable can expand to flags: rm "-r ~"
+	defer("rm -f $(rm -rf ~)"); // the substitution executes
+	defer("rm *"); // unanchored glob can match a file literally named -rf
+	defer("rm *.log");
+	defer("rm [a-z]*");
+	defer('rm "-rf x"'); // quoted target whose content could be a flag
+});
+
+test("unresolvable targets still defer when the rm is recursive", () => {
+	defer("rm -rf /tmp/repro*.ts");
+	defer("rm dist* -rf"); // flags after the target still count
+});
+
 test("unquoted bare rm tokens in non-rm segments defer", () => {
 	defer("echo rm -rf");
 	defer("grep rm -rf src/");

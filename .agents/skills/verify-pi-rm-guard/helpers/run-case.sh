@@ -124,6 +124,7 @@ expectation_for() {
 		deny|deny-root)   echo "SURVIVED|gate=denied|0" ;;
 		defer|defer-glob|defer-var|glob-unbounded) echo "SURVIVED|gate=ineligible|0" ;;
 		absent)           echo "DELETED|absent|0" ;;
+		absent-glob)      echo "DELETED|absent|0" ;;
 		*)                echo "" ;;
 	esac
 }

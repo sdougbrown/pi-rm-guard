@@ -25,6 +25,12 @@ function hasUnresolvableChars(token: string): boolean {
 	return false;
 }
 
+/** Index of the first unresolvable character, or -1 when the token is clean. */
+function firstUnresolvableAt(token: string): number {
+	for (let i = 0; i < token.length; i++) if (UNRESOLVABLE.has(token[i])) return i;
+	return -1;
+}
+
 function isRecursiveFlag(token: string): boolean {
 	if (token === "--recursive") return true;
 	if (!token.startsWith("-") || token.startsWith("--")) return false;
@@ -420,6 +426,10 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 	let sawRecursive = false;
 	let pastDashDash = false;
 	const targets: string[] = [];
+	// Unresolvable targets that only matter if the rm turns out recursive: a
+	// plain rm with them is pi's normal flow, so the defer is held back until
+	// the flag scan completes.
+	let targetDefer = "";
 
 	for (; i < tokens.length; i++) {
 		const token = tokens[i];
@@ -446,12 +456,20 @@ function analyzeSegment(segment: string, home: string, vars: Map<string, string>
 		const expanded = expandTilde(token, home);
 		const substituted = substituteVars(expanded, vars, home);
 		if (hasUnresolvableChars(substituted)) {
-			return { defer: `target is not statically resolvable: ${token}` };
+			const reason = `target is not statically resolvable: ${token}`;
+			// Executing constructs (substitution, backticks) and shape-changing ones
+			// (variables can expand to flags; an expansion with no static prefix
+			// can match a file literally named "-rf") defer regardless of
+			// recursion — even a plain rm can be made recursive by them.
+			if (/[$`]/.test(substituted) || firstUnresolvableAt(substituted) === 0) return { defer: reason };
+			targetDefer ||= reason;
+			continue;
 		}
 		targets.push(expandTilde(substituted, home));
 	}
 
 	if (!sawRecursive) return { defer: "rm without a recursive flag" };
+	if (targetDefer) return { defer: targetDefer };
 	if (targets.length === 0) return { defer: "rm with no targets" };
 	return { targets };
 }
