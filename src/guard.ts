@@ -327,6 +327,26 @@ function parseHeredoc(command: string, start: number): ParsedHeredoc | null {
 }
 
 /**
+ * Parse one `<<<word` here-string starting at the first `<`. The word is a
+ * single shell word — quoted or bare — and its content is returned without
+ * quotes. Unparseable forms (unterminated quote, empty word) yield null so
+ * the operator is left as literal text.
+ */
+function parseHereString(command: string, start: number): { word: string; after: number } | null {
+	let i = start + 3;
+	while (command[i] === " " || command[i] === "\t") i++;
+	if (command[i] === "'" || command[i] === '"') {
+		const close = command.indexOf(command[i], i + 1);
+		if (close === -1) return null;
+		return { word: command.slice(i + 1, close), after: close + 1 };
+	}
+	const wordStart = i;
+	while (i < command.length && !/[\s;&|)<>]/.test(command[i])) i++;
+	if (i === wordStart) return null;
+	return { word: command.slice(wordStart, i), after: i };
+}
+
+/**
  * Remove heredoc bodies from the command: they are data written to stdin,
  * never commands. Quoted delimiters (`<<'EOF'`) make the body fully literal,
  * so it is inert. Unquoted delimiters keep command/parameter expansion in
@@ -394,6 +414,18 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 			i = pendingSkip;
 			pendingSkip = -1;
 			continue;
+		}
+		if (paren === 0 && !backticks && ch === "<" && command[i + 1] === "<" && command[i + 2] === "<" && command[i - 1] !== "<") {
+			// Here-string: one word fed to the consumer's stdin. It executes as
+			// a script when the consumer is an interpreter — otherwise the
+			// normal segment rules already handle it (quoted form inert,
+			// unquoted form substitution-scanned), so it is left untouched.
+			const parsed = parseHereString(command, i);
+			if (parsed && heredocFeedsInterpreter(command, i)) {
+				scriptBodies.push(parsed.word);
+				i = parsed.after;
+				continue;
+			}
 		}
 		if (
 			paren === 0 &&

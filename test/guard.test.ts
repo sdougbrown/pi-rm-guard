@@ -266,6 +266,12 @@ test("a heredoc feeding a script interpreter is judged, not skipped", () => {
 	absent(["python <<'EOF'", "print('hi')", "EOF", "ls"].join("\n"));
 	// a separate command after the delimiter does not consume the heredoc
 	absent(["cat <<'EOF'; node build", "rm -rf /etc", "EOF", "ls"].join("\n"));
+	// here-strings feed one word to the consumer's stdin — a script when
+	// the consumer is an interpreter
+	deny("bash <<< 'rm -rf /'");
+	assert.equal(eligible("bash <<< 'rm -rf /tmp/x'").kind, "eligible");
+	defer('bash <<< "$(rm -rf ~)"');
+	absent("cat <<< 'rm -rf /etc'");
 	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
 });
 
