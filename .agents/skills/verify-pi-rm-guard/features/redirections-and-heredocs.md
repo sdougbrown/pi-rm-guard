@@ -50,6 +50,7 @@ D='{"action":"A","probabilities":{"A":0.95,"B":0.03,"C":0.02}}'
 $H/run-case.sh approve-redirect 'rm -rf /tmp/rmguard-verify-victim 2>/dev/null' "$D"
 $H/run-case.sh heredoc-quoted "$(printf 'cat > /tmp/rmguard-verify-victim/probe.txt <<%sEOF%s\nrm -rf /tmp/rmguard-verify-victim/marker\nEOF' "'" "'")" "$D"
 $H/run-case.sh heredoc-sub    "$(printf 'cat <<EOF\n$(rm -rf /tmp/rmguard-verify-victim/marker)\nEOF')" "$D"
+$H/run-case.sh heredoc-bash   "$(printf 'bash <<%sEOF%s\nrm -rf /tmp/rmguard-verify-victim/marker\nEOF' "'" "'")" "$D"
 ```
 
 Expected end states (all mapped in run-case.sh's expectation table):
@@ -63,6 +64,9 @@ Expected end states (all mapped in run-case.sh's expectation table):
 - `heredoc-sub` — marker SURVIVED, session entry `gate=ineligible`, 0
   decisions calls: the substitution inside the unquoted body is real and
   executes, so it must defer.
+- `heredoc-bash` — marker DELETED, session entry `action=approve
+  autoApproved=true`, 1 decisions call: the interpreter-fed body is judged
+  as live rm, not skipped as data. A `rm -rf /` body variant would deny.
 
 ## Gotchas
 

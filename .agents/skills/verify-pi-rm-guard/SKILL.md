@@ -70,8 +70,8 @@ The harness recipe, in `run-case.sh`:
 
 The four primary mapped cases (one command each; the expectation table in the
 harness also maps `eligible-literal`, `low-conf`, `deny-root`, `defer-var`,
-`glob-unbounded`, `approve-redirect`, `heredoc-quoted`, `heredoc-sub`, and
-`absent-glob`):
+`glob-unbounded`, `approve-redirect`, `heredoc-quoted`, `heredoc-sub`,
+`heredoc-bash`, and `absent-glob`):
 
 ```sh
 H=.agents/skills/verify-pi-rm-guard/helpers

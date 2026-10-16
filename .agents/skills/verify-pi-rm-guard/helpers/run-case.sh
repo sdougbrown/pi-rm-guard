@@ -120,6 +120,7 @@ expectation_for() {
 		approve-redirect) echo "DELETED|action=approve autoApproved=true|1" ;;
 		heredoc-quoted)   echo "SURVIVED|absent|0" ;;
 		heredoc-sub)      echo "SURVIVED|gate=ineligible|0" ;;
+		heredoc-bash)     echo "DELETED|action=approve autoApproved=true|1" ;;
 		low-conf)         echo "SURVIVED|gate=low-confidence autoApproved=false|1" ;;
 		deny|deny-root)   echo "SURVIVED|gate=denied|0" ;;
 		defer|defer-glob|defer-var|glob-unbounded) echo "SURVIVED|gate=ineligible|0" ;;
