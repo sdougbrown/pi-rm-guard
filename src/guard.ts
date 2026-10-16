@@ -199,10 +199,10 @@ function splitSegments(command: string): Segment[] {
 				i++;
 				continue;
 			}
-			// a newline directly after & or | merely ends the statement: the
-			// & already marked it backgrounded and | marks it piped, so do not
-			// overwrite the separator kind with "\n"
-			if (!(ch === "\n" && (pendingSep === "&" || pendingSep === "|"))) pendingSep = ch as Sep;
+			// a newline directly after & | && || merely continues the statement
+			// across the line: the separator kind must survive (a &&-continued
+			// write is still conditional; a |-continued one is still piped)
+			if (!(ch === "\n" && (pendingSep === "&" || pendingSep === "|" || pendingSep === "&&" || pendingSep === "||"))) pendingSep = ch as Sep;
 			continue;
 		}
 		current += ch;
@@ -588,10 +588,16 @@ function varsBySegment(segments: Segment[]): VarSnapshot[] {
 	const out: VarSnapshot[] = [];
 	const vars = new Map<string, string>();
 	let poisoned = false;
+	// Only the leading run of pure assignments is an unconditional prologue:
+	// after the first non-assignment segment, a write may be inside a case
+	// branch, loop body, or other compound construct whose execution is not
+	// guaranteed — its effect on the value is unmodelable, so it unresolves.
+	let prologue = true;
 	for (const [i, seg] of segments.entries()) {
 		out.push({ vars: new Map(vars), poisoned });
 		const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(seg.text);
 		if (!match) {
+			prologue = false;
 			// assignments inside compound commands (`then X=/etc`, function
 			// bodies) may change the value — unresolve the name
 			const stripped = stripQuoted(seg.text);
@@ -612,7 +618,7 @@ function varsBySegment(segments: Segment[]): VarSnapshot[] {
 		const sepAfter = i + 1 < segments.length ? segments[i + 1].sepBefore : "end";
 		const inSubshell = seg.sepBefore === "|" || sepAfter === "|" || sepAfter === "&";
 		if (inSubshell) continue; // the write dies with the subshell: the parent value stands
-		if (seg.sepBefore === "&&" || seg.sepBefore === "||") {
+		if (seg.sepBefore === "&&" || seg.sepBefore === "||" || !prologue) {
 			// the write may never run: the value is uncertain, not the old one
 			vars.delete(match[1]);
 			continue;
@@ -646,7 +652,7 @@ function analyzeSegment(
 	segment: string,
 	home: string,
 	snapshot: VarSnapshot,
-): { targets: string[] } | { defer: string } {
+): { targets: string[]; redirects: string[] } | { defer: string } {
 	const tokens = segment.split(/\s+/).filter(Boolean);
 	let i = 0;
 	const lead = commandWord(tokens[0]);
@@ -658,6 +664,9 @@ function analyzeSegment(
 	let sawRecursive = false;
 	let pastDashDash = false;
 	const targets: string[] = [];
+	// Clean redirection words are not rm targets, but they are truncation
+	// side effects — analyzeCommand scope-checks them
+	const redirects: string[] = [];
 	// Unresolvable targets that only matter if the rm turns out recursive.
 	// A plain rm with such targets is pi's normal flow, so the defer is held
 	// back until the flag scan completes.
@@ -670,12 +679,17 @@ function analyzeSegment(
 			continue;
 		}
 		const redir = redirectionKind(token);
-		if (redir === "attached") continue;
+		if (redir === "attached") {
+			const m = REDIRECT_RE.exec(token);
+			if (m && m[4]) redirects.push(m[4]);
+			continue;
+		}
 		if (redir === "defer") return { defer: `redirection is not statically resolvable: ${token}` };
 		if (redir === "next") {
 			const word = tokens[i + 1];
 			if (word === undefined) return { defer: "redirection with a missing word" };
 			if (hasUnresolvableChars(word)) return { defer: `redirection is not statically resolvable: ${word}` };
+			redirects.push(word);
 			i++;
 			continue;
 		}
@@ -717,7 +731,7 @@ function analyzeSegment(
 	if (!sawRecursive) return { defer: "rm without a recursive flag" };
 	if (targetDefer) return { defer: targetDefer };
 	if (targets.length === 0) return { defer: "rm with no targets" };
-	return { targets };
+	return { targets, redirects };
 }
 
 /**
@@ -823,6 +837,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	let reason = "";
 	const varsBySeg = varsBySegment(segments);
 	const targets: string[] = [];
+	const redirectWords: string[] = [];
 
 	for (const body of expansionBodies) {
 		if (heredocInvokesRm(body)) {
@@ -852,6 +867,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 			if ("targets" in verdict) {
 				sawRecursive = true;
 				targets.push(...verdict.targets);
+				redirectWords.push(...verdict.redirects);
 			} else if (verdict.defer === "rm without a recursive flag") {
 				sawPlainRm = true;
 			} else {
@@ -909,6 +925,18 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	if (rmDeferred || sawPlainRm) return { kind: "defer", reason: reason || "mixed recursive and non-recursive rm" };
 
 	const tmpReal = resolveReal("/tmp", cwd);
+	// Redirection words truncate their path: a clean word is scope-checked
+	// like a target, with /dev/null exempt (truncating it is harmless). An
+	// out-of-scope word defers — the model never sees it as a target because
+	// rm does not delete it.
+	for (const word of redirectWords) {
+		if (word.startsWith("~") && word !== "~" && !word.startsWith("~/")) {
+			return { kind: "defer", reason: `redirection expands via unhandled tilde form: ${word}` };
+		}
+		const real = resolveReal(expandTilde(word, home), cwd);
+		if (real === "/dev/null" || isUnder(real, resolveReal(cwd, cwd)) || isUnder(real, tmpReal)) continue;
+		return { kind: "defer", reason: `redirection target is outside the session and /tmp: ${word}` };
+	}
 	const scope = isTargetInScope(targets, cwd, tmpReal);
 	if (scope.denied) return { kind: "deny", reason: scope.reason };
 	if (!scope.inScope) return { kind: "defer", reason: scope.reason };

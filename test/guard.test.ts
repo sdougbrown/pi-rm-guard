@@ -110,8 +110,32 @@ test("assignment values that word-split are not substituted", () => {
 test("HOME assignment shadows the environment value only from that point on", () => {
 	deny("rm -rf $HOME; HOME=/tmp/x");
 	assert.equal(eligible("HOME=./sub; rm -rf $HOME").kind, "eligible");
-	// both writes precede their rms: normal flow stays judgeable
-	assert.equal(eligible("X=dist; rm -rf $X; X=dist2; rm -rf $X").kind, "eligible");
+	// a leading prologue of pure assignments is fully judged; a write after
+	// the first non-assignment segment may be inside a compound construct,
+	// so it unresolves — safe over-gate
+	defer("X=dist; rm -rf $X; X=dist2; rm -rf $X");
+});
+
+test("conditional writes survive a newline after their guard", () => {
+	// the && continues across the newline: the write is still conditional
+	defer(["X=/etc; false &&", "X=dist; rm -rf $X"].join("\n"));
+	defer(["X=/etc; true ||", "X=dist; rm -rf $X"].join("\n"));
+});
+
+test("writes inside compound commands unresolve even as plain segments", () => {
+	// the case-branch write is a plain ; separated segment, but its
+	// execution is conditional on the branch
+	defer("X=/etc; case $Y in z) echo hi; X=dist;; esac; rm -rf $X");
+});
+
+test("redirection words are scope-checked as truncation side effects", () => {
+	defer("rm -rf dist >~/.bashrc");
+	defer("rm -rf dist 2>/etc/cron.d/x");
+	defer("rm -rf dist >>/etc/passwd");
+	defer("rm -rf dist > ~/x");
+	// harmless and in-scope words keep their verdicts
+	assert.equal(eligible("rm -rf dist 2>/dev/null").kind, "eligible", "dev null redirect");
+	assert.equal(eligible("rm -rf dist >>build.log").kind, "eligible", "in-cwd redirect");
 });
 
 test("quoted rm mentions in non-rm commands pass through untouched", () => {
