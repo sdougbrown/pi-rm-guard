@@ -6,11 +6,15 @@
   go to the decision model.
 - Variable indirection resolved from literal assignments that run in the
   main shell before the rm (`WT=/tmp/x; rm -rf $WT`) behaves like a literal
-  target. Writes that may not run (`&&`/`||`-guarded), die in subshells
-  (pipeline and background components, interpreter-heredoc bodies), or
-  carry values that word-split (whitespace, or any value after an `IFS=`
-  write) never substitute. A write that runs but cannot be resolved
-  unresolves the name instead of going stale.
+  target. Writes that may not run — `&&`/`||`-guarded, or assignments inside
+  compound commands (`then X=/etc`) — unresolve the name: the value is
+  uncertain, not the old one. Writes that die in subshells (pipeline and
+  background components, interpreter-heredoc bodies) leave the parent value
+  standing. Values that word-split (whitespace, or any value after an `IFS=`
+  write) never substitute, and a write that runs but cannot be resolved
+  unresolves the name instead of going stale. A redirection attached to the
+  command or target word (`rm>f -rf /`, `rm -rf dist>log`) is stripped
+  before tokens are judged.
 - Anything the gate cannot resolve — `$VAR` with no literal assignment, globs
   (`*`, `?`), quoted targets, command substitution, backticks — defers to a
   human (in print mode: fails closed with a block).

@@ -82,7 +82,11 @@ Expected end states (all mapped in run-case.sh's expectation table):
   command: `cat > f <<'EOF' … EOF` followed by a real `rm -rf dist` is still
   judged eligible/deferred on its own merits.
 - The skip never applies when the heredoc feeds a script interpreter: that
-  body executes, so it is judged as live text.
+  body is extracted and judged as a script. The consumer window is the
+  statement that opens the heredoc, not the whole physical line —
+  `cat <<'EOF'; node build` keeps the body as data because the tail is a
+  separate command, while `cat <<EOF | bash` still counts (pipelines feed
+  the body onward).
 - Body scanning for unquoted delimiters is quote-blind at the body's top
   level (quotes are literal data there), but a `$(...)` span is matched with
   full shell grammar — quotes and nesting count inside a substitution, so

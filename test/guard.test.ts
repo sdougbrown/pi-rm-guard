@@ -86,8 +86,9 @@ test("assignments apply in command order, so a later one cannot mask the value a
 	// no assignment before the rm: $X is unresolvable and defers
 	defer("rm -rf -- $X; X=/etc");
 	defer("rm -rf $X; X=dist");
-	// short-circuit: the guarded write may never execute
-	deny("X=/etc; false && X=dist; rm -rf $X");
+	// short-circuit and control-flow writes make the value uncertain, not old
+	defer("X=/tmp/x; a && X=/etc; rm -rf $X");
+	defer("X=dist; if true; then X=/etc; fi; rm -rf $X");
 	// pipeline and background components run in subshells: the write dies there
 	deny("X=/etc; X=dist | rm -rf $X");
 	deny("X=/etc; X=dist & rm -rf $X");
@@ -223,6 +224,18 @@ test("plain rm text in an unquoted body is data, not a command", () => {
 	absent(["cat <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
 });
 
+test("a redirection attached to the rm word does not hide the rm", () => {
+	// bash tokenizes `rm>f` as the command rm plus a redirection
+	deny("rm>f -rf /");
+	assert.equal(eligible("rm -rf dist>log").kind, "eligible");
+	defer("rm -rf dist >"); // bash: syntax error, nothing runs
+});
+
+test("targets from every segment participate in the scope verdict", () => {
+	deny("rm -rf dist && rm -rf /etc");
+	defer("rm -rf dist && rm -rf leak"); // leak -> symlink escaping to $HOME
+});
+
 test("a heredoc feeding a script interpreter is judged, not skipped", () => {
 	// the body executes as a script, so it is left as live text
 	deny(["bash <<'EOF'", "rm -rf /", "EOF", "ls"].join("\n"));
@@ -248,8 +261,12 @@ test("a heredoc feeding a script interpreter is judged, not skipped", () => {
 	// (bash looks it up as a command and fails), so it stays data
 	deny(["I=bash", "$I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
 	deny(["I() { bash; }", "I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
-	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
+	// unresolvable body content reaches the defer branch, not just deny/eligible
+	defer(["bash <<EOF", "rm -rf $X", "EOF", "ls"].join("\n"));
 	absent(["python <<'EOF'", "print('hi')", "EOF", "ls"].join("\n"));
+	// a separate command after the delimiter does not consume the heredoc
+	absent(["cat <<'EOF'; node build", "rm -rf /etc", "EOF", "ls"].join("\n"));
+	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
 });
 
 test("variables cannot carry flags into target position", () => {

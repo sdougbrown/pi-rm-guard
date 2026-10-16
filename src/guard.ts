@@ -56,7 +56,23 @@ function heredocFeedsInterpreter(command: string, heredocStart: number): boolean
 		lineEnd = command.indexOf("\n", lineEnd + 1);
 	}
 	const line = command.slice(lineStart, lineEnd === -1 ? command.length : lineEnd);
-	const tokens = line.split(/[;|&<>]+/).flatMap((part) => part.split(/\s+/));
+	// only the statement that opens the heredoc can consume it: `; node build`
+	// after the delimiter is a separate command and must not count
+	const offset = heredocStart - lineStart;
+	const isBoundary = (i: number) =>
+		line[i] === ";" ||
+		(line[i] === "&" &&
+			(line[i + 1] === "&" || (line[i - 1] !== "<" && line[i - 1] !== ">" && line[i - 1] !== "&" && line[i + 1] !== ">" && line[i + 1] !== "&")));
+	let winStart = 0;
+	for (let i = 0; i < offset; i++) if (isBoundary(i)) winStart = i + 1;
+	let winEnd = line.length;
+	for (let i = offset; i < line.length; i++) {
+		if (isBoundary(i)) {
+			winEnd = i;
+			break;
+		}
+	}
+	const tokens = line.slice(winStart, winEnd).split(/[;|&<>]+/).flatMap((part) => part.split(/\s+/));
 	const functions = new Set<string>();
 	for (const m of command.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{/g)) functions.add(m[1]);
 	return tokens.some((token) => {
@@ -470,12 +486,21 @@ function heredocInvokesRm(body: string): boolean {
 	return false;
 }
 
+/**
+ * Command word of a token. Bash tokenizes `rm>f` as the command `rm` plus an
+ * attached redirection, so the operator and its word are stripped before any
+ * command comparison.
+ */
+function commandWord(token: string): string {
+	return token.replace(/(>>?|<&?|>&?|&>).*$/, "");
+}
+
 /** Whether a command string (no quotes assumed) invokes rm as a command token. */
 function hasRmToken(command: string): boolean {
 	return command
 		.split(/\s+/)
 		.filter(Boolean)
-		.map((token) => token.replace(/^\(+/, "")) // subshell grouping: $( (rm ...) )
+		.map((token) => commandWord(token.replace(/^\(+/, ""))) // subshell grouping: $( (rm ...) )
 		.some((token) => token === "rm" || token.endsWith("/rm"));
 }
 
@@ -516,16 +541,34 @@ function varsBySegment(segments: Segment[]): VarSnapshot[] {
 	for (const [i, seg] of segments.entries()) {
 		out.push({ vars: new Map(vars), poisoned });
 		const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(seg.text);
-		if (!match) continue;
+		if (!match) {
+			// assignments inside compound commands (`then X=/etc`, function
+			// bodies) may change the value — unresolve the name
+			const stripped = stripQuoted(seg.text);
+			if (stripped === null) continue;
+			for (const token of stripped.split(/\s+/)) {
+				const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(token);
+				if (m) {
+					if (m[1] === "IFS") poisoned = true;
+					else vars.delete(m[1]);
+				}
+			}
+			continue;
+		}
 		if (match[1] === "IFS") {
 			poisoned = true;
 			continue;
 		}
 		const sepAfter = i + 1 < segments.length ? segments[i + 1].sepBefore : "end";
-		const mainShell = ["", ";", "\n", "&"].includes(seg.sepBefore) && ["end", ";", "\n", "&&", "||"].includes(sepAfter as string);
-		if (!mainShell) continue;
+		const inSubshell = seg.sepBefore === "|" || sepAfter === "|" || sepAfter === "&";
+		if (inSubshell) continue; // the write dies with the subshell: the parent value stands
+		if (seg.sepBefore === "&&" || seg.sepBefore === "||") {
+			// the write may never run: the value is uncertain, not the old one
+			vars.delete(match[1]);
+			continue;
+		}
 		if (!hasUnresolvableChars(match[2]) && !/\s/.test(match[2])) vars.set(match[1], match[2]);
-		else vars.delete(match[1]);
+		else vars.delete(match[1]); // a write that runs but cannot be resolved clobbers the name
 	}
 	return out;
 }
@@ -556,7 +599,8 @@ function analyzeSegment(
 ): { targets: string[] } | { defer: string } {
 	const tokens = segment.split(/\s+/).filter(Boolean);
 	let i = 0;
-	if (tokens[i] !== "rm" && !tokens[i].endsWith("/rm")) {
+	const lead = commandWord(tokens[0]);
+	if (lead !== "rm" && !lead.endsWith("/rm")) {
 		return { defer: "segment is not a plain rm invocation" };
 	}
 	i++;
@@ -580,18 +624,17 @@ function analyzeSegment(
 		if (redir === "defer") return { defer: `redirection is not statically resolvable: ${token}` };
 		if (redir === "next") {
 			const word = tokens[i + 1];
-			if (word === undefined || !hasUnresolvableChars(word)) {
-				i++;
-				continue;
-			}
-			return { defer: `redirection is not statically resolvable: ${word}` };
+			if (word === undefined) return { defer: "redirection with a missing word" };
+			if (hasUnresolvableChars(word)) return { defer: `redirection is not statically resolvable: ${word}` };
+			i++;
+			continue;
 		}
 		if (!pastDashDash && isFlag(token)) {
 			if (hasUnresolvableChars(token)) return { defer: `flag with expansion chars: ${token}` };
 			if (isRecursiveFlag(token)) sawRecursive = true;
 			continue;
 		}
-		const expanded = expandTilde(token, home);
+		const expanded = expandTilde(commandWord(token), home);
 		const substituted = substituteVars(expanded, snapshot.vars, home);
 		if (snapshot.poisoned && /\$/.test(token)) {
 			// an IFS= write changes field splitting: X=delme:/etc can expand to
@@ -747,7 +790,7 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 		}
 
 		const { remainder, inners } = extractSubstitutions(stripped);
-		const firstToken = remainder.trim().split(/\s+/)[0] ?? "";
+		const firstToken = commandWord(remainder.trim().split(/\s+/)[0] ?? "");
 
 		if (firstToken === "rm" || firstToken.endsWith("/rm")) {
 			const verdict = analyzeSegment(segment, home, varsBySeg[index]);
