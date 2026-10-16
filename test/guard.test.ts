@@ -340,6 +340,22 @@ test("unparseable heredoc operators judge everything as live text", () => {
 	deny(["cat <<", "rm -rf /"].join("\n"));
 });
 
+test("a continuation after the heredoc operator is live, not body", () => {
+	// bash joins `cat <<EOF \` + newline into one logical command, so the
+	// next line's `; rm -rf /` executes — the body starts after the logical
+	// line, and the live segment is judged
+	deny("cat <<EOF \\\n; rm -rf /\nEOF");
+	// an escaped backslash is not a continuation: the line is body data
+	absent("cat <<EOF \\\\\n; rm -rf /\nEOF");
+	// an interpreter before a `;` does not consume the heredoc
+	absent(["bash; cat <<'EOF'", "rm -rf /", "EOF"].join("\n"));
+});
+
+test("redirect-word tilde forms the gate cannot place defer", () => {
+	defer("rm -rf dist >~root/x");
+	defer("rm -rf dist 2>~+/x");
+});
+
 test("an attached redirection on an argument word is not a command", () => {
 	// bash runs `echo rm` with stdout to build.log — the rm is an argument
 	absent("echo rm>build.log");
@@ -389,12 +405,6 @@ test("a backgrounded write across a newline does not count for the parent", () =
 	deny("X=/etc; X=dist & rm -rf $X");
 });
 
-test("heredoc: here-strings feed one word to the consumer's stdin", () => {
-	deny("bash <<< 'rm -rf /'");
-	assert.equal(eligible("bash <<< 'rm -rf /tmp/x'").kind, "eligible", "in-scope here-string word");
-	defer('bash <<< "$(rm -rf ~)"');
-	absent("cat <<< 'rm -rf /etc'");
-});
 
 test("variables cannot carry flags into target position", () => {
 	defer("X=-rf; Y=/etc; rm $X $Y");

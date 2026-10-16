@@ -322,7 +322,13 @@ function parseHeredoc(command: string, start: number): ParsedHeredoc | null {
 	// over-gate — it never skips a live rm.
 	if (/[$`\\]/.test(delimiter) && quoteChar !== "'") return null;
 
-	const newline = command.indexOf("\n", i);
+	// the body starts after the LOGICAL line: a backslash-newline joins
+	// the next physical line into the opening command, so text there is
+	// live shell, not body data
+	let newline = command.indexOf("\n", i);
+	while (newline !== -1 && command[newline - 1] === "\\") {
+		newline = command.indexOf("\n", newline + 1);
+	}
 	if (newline === -1) {
 		// no body ever arrives: the operator waits for stdin and the command ends
 		return { afterDelimiter: i, skipTo: -1, quoted, body: "" };

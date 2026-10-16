@@ -39,7 +39,9 @@ Two shell constructs that do not affect what an `rm` deletes:
 
 Terminator matching is strict (a line must be exactly the delimiter; `<<-`
 allows leading tabs) — a line like `EOF; rm -rf dist` does not terminate a
-heredoc and its text never executes, matching real bash. A missing terminator
+heredoc and its text never executes, matching real bash. The body starts
+after the LOGICAL opening line: a `\\`-newline continuation there is live
+shell, while an escaped backslash is body data. A missing terminator
 consumes the rest of the command as body, also matching bash. A delimiter
 containing `$`, a backtick, or a backslash is not extracted at all: bash's
 terminator differs from the literal word, so every line is judged as live
