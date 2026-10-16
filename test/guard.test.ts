@@ -199,7 +199,7 @@ test("quoted heredoc bodies are data, not shell", () => {
 	// even a literal "rm -rf /" in a quoted body never executes
 	absent(["cat > /tmp/x <<'EOF'", "rm -rf /", "EOF", "echo done"].join("\n"));
 	// heredoc text is skipped but a live rm in the same command is still judged
-	assert.equal(eligible(["cat > /tmp/x <<'EOF'", "rm -rf ~", "EOF", "rm -rf dist"].join("\n")).kind, "eligible");
+	assert.equal(eligible(["cat > /tmp/x <<'EOF'", "rm -rf ~", "EOF", "rm -rf dist"].join("\n")).kind, "eligible", "live rm alongside a quoted heredoc");
 	// <<"EOF" quoted delimiter, and <<- with a tab-indented terminator
 	absent(["cat > /tmp/x <<\"EOF\"", "rm -rf /etc", "EOF", "ls"].join("\n"));
 	absent(["cat > /tmp/x <<-EOF", "\trm -rf /etc", "\tEOF", "ls"].join("\n"));
@@ -236,18 +236,38 @@ test("targets from every segment participate in the scope verdict", () => {
 	defer("rm -rf dist && rm -rf leak"); // leak -> symlink escaping to $HOME
 });
 
-test("a heredoc feeding a script interpreter is judged, not skipped", () => {
+test("heredoc: interpreter consumers deny, judge, or pass through the body", () => {
 	// the body executes as a script, so it is left as live text
 	deny(["bash <<'EOF'", "rm -rf /", "EOF", "ls"].join("\n"));
-	assert.equal(eligible(["bash <<EOF", "rm -rf /tmp/x", "EOF", "ls"].join("\n")).kind, "eligible");
+	assert.equal(
+		eligible(["bash <<EOF", "rm -rf /tmp/x", "EOF", "ls"].join("\n")).kind,
+		"eligible",
+		"unquoted interpreter consumer, in-scope body",
+	);
 	absent(["bash <<'EOF'", "echo hi", "EOF", "ls"].join("\n"));
-	// interpreter anywhere in the consuming segment counts, including pipes
+	// unresolvable body content reaches the defer branch, not just deny/eligible
+	defer(["bash <<EOF", "rm -rf $X", "EOF", "ls"].join("\n"));
+	absent(["python <<'EOF'", "print('hi')", "EOF", "ls"].join("\n"));
+});
+
+test("heredoc: pipe consumers feed the body onward and still judge it", () => {
 	assert.equal(
 		eligible(["cat <<EOF | bash", "rm -rf /tmp/x", "EOF", "ls"].join("\n")).kind,
 		"eligible",
+		"pipeline consumer",
 	);
-	// quoted and path-prefixed interpreter names, and backslash continuations,
-	// are still script consumers
+	// a pipeline continues across a bare newline after a trailing pipe
+	assert.equal(
+		eligible(["cat <<EOF |", "bash", "rm -rf /tmp/x", "EOF", "ls"].join("\n")).kind,
+		"eligible",
+		"pipelined continuation consumer",
+	);
+	// a background boundary ends the statement: the next line is separate
+	absent(["bash &", "cat <<'EOF'", "rm -rf /etc", "EOF", "ls"].join("\n"));
+	absent(["cat <<'EOF'; node build", "rm -rf /etc", "EOF", "ls"].join("\n"));
+});
+
+test("heredoc: quoted, path-prefixed, and continued interpreter names still count", () => {
 	deny(['"bash" <<EOF', "rm -rf /", "EOF", "ls"].join("\n"));
 	deny(["'/bin/bash' <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
 	assert.equal(
@@ -256,23 +276,29 @@ test("a heredoc feeding a script interpreter is judged, not skipped", () => {
 		"path-prefixed interpreter",
 	);
 	deny(["bash \\", "<<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
-	// variable consumers and defined functions run unknown code with the
-	// body as stdin — judged as scripts; a bare unassigned name is not one
-	// (bash looks it up as a command and fails), so it stays data
+});
+
+test("heredoc: variable and function consumers are unresolvable, not data", () => {
 	deny(["I=bash", "$I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
 	deny(["I() { bash; }", "I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
-	// unresolvable body content reaches the defer branch, not just deny/eligible
-	defer(["bash <<EOF", "rm -rf $X", "EOF", "ls"].join("\n"));
-	absent(["python <<'EOF'", "print('hi')", "EOF", "ls"].join("\n"));
-	// a separate command after the delimiter does not consume the heredoc
-	absent(["cat <<'EOF'; node build", "rm -rf /etc", "EOF", "ls"].join("\n"));
-	// here-strings feed one word to the consumer's stdin — a script when
-	// the consumer is an interpreter
+	deny(["function I { bash; }", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
+	// a bare unassigned name is not a variable — bash looks it up as a
+	// command and fails, so the body stays data
+	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
+});
+
+test("a backgrounded write across a newline does not count for the parent", () => {
+	// bash: the parent X stays /etc after the backgrounded write dies
+	deny(["X=/etc", "X=dist &", "rm -rf $X"].join("\n"));
+	// and the same-line form keeps its deny too
+	deny("X=/etc; X=dist & rm -rf $X");
+});
+
+test("heredoc: here-strings feed one word to the consumer's stdin", () => {
 	deny("bash <<< 'rm -rf /'");
-	assert.equal(eligible("bash <<< 'rm -rf /tmp/x'").kind, "eligible");
+	assert.equal(eligible("bash <<< 'rm -rf /tmp/x'").kind, "eligible", "in-scope here-string word");
 	defer('bash <<< "$(rm -rf ~)"');
 	absent("cat <<< 'rm -rf /etc'");
-	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
 });
 
 test("variables cannot carry flags into target position", () => {

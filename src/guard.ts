@@ -45,14 +45,19 @@ const SCRIPT_INTERPRETERS = new Set([
  *   command and fails — so `I=bash; I <<EOF` stays a data heredoc.
  */
 function heredocFeedsInterpreter(command: string, heredocStart: number): boolean {
-	// A backslash-newline is a bash continuation, so the logical line can span
-	// several physical ones — widen the window across any continuations.
+	// A line ending in a backslash, a pipe, or `&&` is a bash continuation:
+	// the logical statement spans several physical lines, so the window must
+	// join them. A trailing single `&` is a background boundary, not a join.
+	const joins = (s: string) => {
+		const t = s.replace(/\s+$/, "");
+		return t.endsWith("\\") || t.endsWith("|") || t.endsWith("&&");
+	};
 	let lineStart = command.lastIndexOf("\n", heredocStart) + 1;
-	while (lineStart >= 2 && command[lineStart - 2] === "\\") {
+	while (lineStart >= 2 && joins(command.slice(lineStart - 2 > 0 ? lineStart - 2 : 0, lineStart - 1))) {
 		lineStart = command.lastIndexOf("\n", lineStart - 2) + 1;
 	}
 	let lineEnd = command.indexOf("\n", heredocStart);
-	while (lineEnd !== -1 && command[lineEnd - 1] === "\\") {
+	while (lineEnd !== -1 && joins(command.slice(lineStart, lineEnd))) {
 		lineEnd = command.indexOf("\n", lineEnd + 1);
 	}
 	const line = command.slice(lineStart, lineEnd === -1 ? command.length : lineEnd);
@@ -75,6 +80,8 @@ function heredocFeedsInterpreter(command: string, heredocStart: number): boolean
 	const tokens = line.slice(winStart, winEnd).split(/[;|&<>]+/).flatMap((part) => part.split(/\s+/));
 	const functions = new Set<string>();
 	for (const m of command.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{/g)) functions.add(m[1]);
+	// bash also accepts the `function name {` form (and POSIX `function name()`)
+	for (const m of command.matchAll(/function\s+([A-Za-z_][A-Za-z0-9_]*)\s*[{(]/g)) functions.add(m[1]);
 	return tokens.some((token) => {
 		if (/\$/.test(token)) return true;
 		const bare = token.replace(/^["']+|["']+$/g, "");
@@ -185,8 +192,15 @@ function splitSegments(command: string): Segment[] {
 		if (paren === 0 && (ch === ";" || ch === "|" || ch === "&" || ch === "\n")) {
 			if (current.trim().length > 0) out.push({ text: current.trim(), sepBefore: pendingSep });
 			current = "";
-			pendingSep = (ch === "|" || ch === "&") && command[i + 1] === ch ? (ch + ch) as Sep : (ch as Sep);
-			if ((ch === "|" || ch === "&") && command[i + 1] === ch) i++;
+			if ((ch === "|" || ch === "&") && command[i + 1] === ch) {
+				pendingSep = (ch + ch) as Sep;
+				i++;
+				continue;
+			}
+			// a newline directly after & or | merely ends the statement: the
+			// & already marked it backgrounded and | marks it piped, so do not
+			// overwrite the separator kind with "\n"
+			if (!(ch === "\n" && (pendingSep === "&" || pendingSep === "|"))) pendingSep = ch as Sep;
 			continue;
 		}
 		current += ch;
