@@ -260,6 +260,19 @@ test("targets from every segment participate in the scope verdict", () => {
 	defer("rm -rf dist && rm -rf leak"); // leak -> symlink escaping to $HOME
 });
 
+test("heredoc: quoted and unquoted substitutions in the body differ", () => {
+	// double quotes do NOT suppress command substitution
+	defer(["bash <<'EOF'", '"$(rm -rf ~)"', "EOF", "ls"].join("\n"));
+	defer('bash <<< "$(rm -rf /)"');
+	// single-quoted and quoted-arg content is inert data
+	absent(["bash <<'EOF'", "echo '$HOME'", "EOF", "ls"].join("\n"));
+	absent(["bash <<'EOF'", 'echo "$HOME"', "EOF", "ls"].join("\n"));
+	// an unquoted expansion as a command or argument is unknowable
+	defer(["bash <<'EOF'", "$X", "EOF", "ls"].join("\n"));
+	defer(["bash <<'EOF'", "sudo $X", "EOF", "ls"].join("\n"));
+	defer(["bash <<'EOF'", "rm -rf $X", "EOF", "ls"].join("\n"));
+});
+
 test("heredoc: interpreter consumers deny, judge, or pass through the body", () => {
 	// the body executes as a script, so it is left as live text
 	deny(["bash <<'EOF'", "rm -rf /", "EOF", "ls"].join("\n"));
@@ -307,8 +320,41 @@ test("heredoc: variable and function consumers are unresolvable, not data", () =
 	deny(["I() { bash; }", "I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
 	deny(["function I { bash; }", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
 	// a bare unassigned name is not a variable — bash looks it up as a
-	// command and fails, so the body stays data
+	// command and fails, so the body stays data; both function definition
+	// forms are consumers
 	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
+	deny(["function I() { bash; }", "I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
+});
+
+test("heredocs inside substitutions or quotes are judged as live text", () => {
+	// the extractor only handles top-level heredocs; wrapped ones fall
+	// through to the normal segment rules (over-gate, never bypass)
+	deny(["echo `bash <<'EOF'", "rm -rf /", "EOF`"].join("\n"));
+	defer(["$(cat <<'EOF'", "rm -rf /", "EOF", ")"].join("\n"));
+});
+
+test("unparseable heredoc operators judge everything as live text", () => {
+	// the unterminated delimiter quote defers via the unbalanced-quote path;
+	// the missing delimiter word leaves the rm line live
+	defer(["cat <<'EOF", "rm -rf /"].join("\n"));
+	deny(["cat <<", "rm -rf /"].join("\n"));
+});
+
+test("an attached redirection on an argument word is not a command", () => {
+	// bash runs `echo rm` with stdout to build.log — the rm is an argument
+	absent("echo rm>build.log");
+	// but a redirection on the command word still hides an rm
+	deny("rm>f -rf /");
+});
+
+test("IFS poisoning covers compound-command writes", () => {
+	defer("X=a/b; if true; then IFS=.; fi; rm -rf $X");
+});
+test("heredoc: here-strings feed one word to the consumer's stdin", () => {
+	deny("bash <<< 'rm -rf /'");
+	assert.equal(eligible("bash <<< 'rm -rf /tmp/x'").kind, "eligible", "in-scope here-string word");
+	defer('bash <<< "$(rm -rf ~)"');
+	absent("cat <<< 'rm -rf /etc'");
 	// an unresolvable here-string word defers: the expanded script content
 	// is not knowable from its text
 	defer("bash <<< $X");
@@ -316,7 +362,7 @@ test("heredoc: variable and function consumers are unresolvable, not data", () =
 	defer("X=rm -rf ~; bash <<< $X");
 	// a subshell IFS write cannot change the parent IFS
 	assert.equal(eligible("IFS=: & X=1; rm -rf $X").kind, "eligible", "subshell IFS write");
-});
+})
 
 test("process substitutions run their inner command and defer", () => {
 	defer("echo <(rm -rf /etc)");

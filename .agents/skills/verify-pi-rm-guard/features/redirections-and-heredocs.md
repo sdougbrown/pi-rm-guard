@@ -24,16 +24,18 @@ Two shell constructs that do not affect what an `rm` deletes:
   child-shell scope: `bash <<'EOF'` with an `rm -rf /` body auto-denies, a
   benign script body stays absent, an in-scope `rm -rf /tmp/x` body goes to
   the model, and assignments inside the body never reach the parent
-  command's variable timeline. An unquoted expansion or backtick in the
-  body defers (what the child shell would run is unknowable); quoted
-  content is judged as data. A bare unassigned name is not a variable —
-  bash looks it up as a command and fails — so `I=bash; I <<EOF` stays a
-  data heredoc. **Here-strings** (`<<<`) follow the same rule: the word fed
-  to an interpreter executes (`bash <<< 'rm -rf /'` auto-denies, an
-  unresolvable word defers), while a data-consumer here-string stays inert
-  (`cat <<< 'rm -rf /etc'` absent). The consumer window joins continuation
-  lines ending in `\` or `|`; a trailing `&&` does not join (its left
-  operand never feeds the heredoc onward).
+  command's variable timeline. Command substitutions in the body execute
+  even inside double quotes, so they are caught quote-blind; an unquoted
+  expansion or backtick elsewhere in the body defers (what the child shell
+  would run is unknowable); single-quoted content is judged as data. A bare
+  unassigned name is not a variable — bash looks it up as a command and
+  fails — so `I=bash; I <<EOF` stays a data heredoc. **Here-strings**
+  (`<<<`) follow the same rule: the word fed to an interpreter executes
+  (`bash <<< 'rm -rf /'` auto-denies, an unresolvable word defers), while a
+  data-consumer here-string stays inert (`cat <<< 'rm -rf /etc'` absent).
+  The consumer window joins continuation lines ending in `\` or `|`; a
+  trailing `&&` does not join (its left operand never feeds the heredoc
+  onward).
 
 Terminator matching is strict (a line must be exactly the delimiter; `<<-`
 allows leading tabs) — a line like `EOF; rm -rf dist` does not terminate a

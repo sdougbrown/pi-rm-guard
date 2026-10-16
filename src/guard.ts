@@ -550,7 +550,12 @@ function hasRmToken(command: string): boolean {
 	return command
 		.split(/\s+/)
 		.filter(Boolean)
-		.map((token) => commandWord(token.replace(/^\(+/, ""))) // subshell grouping: $( (rm ...) )
+		.map((token, index) => {
+			const bare = token.replace(/^\(+/, ""); // subshell grouping: $( (rm ...) )
+			// only a command-position token can hide an rm behind an attached
+			// redirection (`rm>f`): `echo rm>build.log` is an argument
+			return index === 0 ? commandWord(bare) : bare;
+		})
 		.some((token) => token === "rm" || token.endsWith("/rm"));
 }
 
@@ -909,9 +914,16 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 
 	// An interpreter-fed heredoc body is a script: judge it on its own, in its
 	// own child-shell scope — its assignments never reach the parent timeline.
-	// An unquoted expansion or backtick in the body makes what the child shell
-	// runs unknowable, so the body defers; quoted content is judged as data.
+	// Command substitutions inside the body execute even inside double quotes,
+	// so a quote-blind scan catches them; an unquoted expansion or backtick
+	// outside a substitution makes what runs unknowable and defers. Single-
+	// quoted content is judged as data.
 	for (const body of scriptBodies) {
+		if (heredocInvokesRm(body)) {
+			rmDeferred = true;
+			reason = "rm inside a command substitution";
+			continue;
+		}
 		const strippedBody = stripQuoted(body);
 		if (strippedBody !== null && /[$`]/.test(strippedBody)) {
 			rmDeferred = true;
