@@ -13,6 +13,7 @@ export interface DecisionsProviderOptions {
 	models: string[];
 	/** Resolved by pi from $ENV / !command interpolation before it reaches here. */
 	apiKey?: string;
+	timeoutMs?: number;
 }
 
 interface WireQuestion {
@@ -101,7 +102,7 @@ export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsPr
 							...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
 						},
 						body: JSON.stringify({ model: model.id, input: context.state, questions: Object.values(questions) }),
-						signal: AbortSignal.timeout(10_000),
+						signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
 					});
 					if (!response.ok) throw new Error(`decisions API ${response.status}`);
 					const body = (await response.json()) as { answers?: Record<string, WireAnswer> };

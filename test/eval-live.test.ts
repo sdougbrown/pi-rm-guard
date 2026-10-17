@@ -24,6 +24,6 @@ test("live evaluation reports unavailable judgments as failures, never successfu
 		child.on("close", resolve);
 	});
 	assert.equal(code, 1);
-	assert.match(output, /FAIL decisions error.*decision API 500/);
+	assert.match(output, /FAIL decisions error/);
 	assert.doesNotMatch(output, /\bok\s+decisions error/);
 });

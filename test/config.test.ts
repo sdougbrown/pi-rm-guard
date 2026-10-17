@@ -29,13 +29,26 @@ test("settings block overrides defaults", () => {
 test("env overrides settings", async () => {
 	process.env.RM_GUARD_BACKEND = "decisions";
 	process.env.RM_GUARD_MODEL = "other";
+	process.env.RM_GUARD_THRESHOLD = "0.97";
 	try {
-		const c = resolveConfig(fakePi({ rmGuard: { backend: "classifier", model: "gemma4" } }));
+		const c = resolveConfig(fakePi({ rmGuard: { backend: "classifier", model: "gemma4", threshold: 0.2 } }));
 		assert.equal(c.backend, "decisions");
 		assert.equal(c.decisionsModel, "other");
+		assert.equal(c.threshold, 0.97);
 	} finally {
 		delete process.env.RM_GUARD_BACKEND;
 		delete process.env.RM_GUARD_MODEL;
+		delete process.env.RM_GUARD_THRESHOLD;
+	}
+});
+
+test("unknown explicit backends are configuration errors, not another engine", () => {
+	assert.throws(() => resolveConfig(fakePi({ rmGuard: { backend: "classifer" } })), /classifer/);
+	process.env.RM_GUARD_BACKEND = "decison";
+	try {
+		assert.throws(() => resolveConfig(fakePi({ rmGuard: { backend: "classifier" } })), /decison/);
+	} finally {
+		delete process.env.RM_GUARD_BACKEND;
 	}
 });
 

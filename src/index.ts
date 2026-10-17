@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createClassifierBackend, createDecisionsBackend, type DecisionBackend } from "./backends.ts";
+import { createClassifierBackend, createDecisionsBackend, type DecisionBackend, type DecisionOutcome } from "./backends.ts";
 import { mayInvokeRm } from "./detect.ts";
 import { registerDecisionsProvider } from "./decisions-provider.ts";
 
@@ -57,8 +57,12 @@ export function resolveConfig(pi: ExtensionAPI): RmGuardConfig {
 		return raw === undefined ? fallback : Number(raw);
 	};
 
+	const backend = env("RM_GUARD_BACKEND") ?? settings.backend ?? "classifier";
+	if (backend !== "classifier" && backend !== "decisions") {
+		throw new Error(`unknown rm-guard backend ${JSON.stringify(backend)}; expected classifier or decisions`);
+	}
 	return {
-		backend: (env("RM_GUARD_BACKEND") as RmGuardConfig["backend"]) ?? (settings.backend as RmGuardConfig["backend"]) ?? "classifier",
+		backend,
 		threshold: env("RM_GUARD_THRESHOLD") ? Number(env("RM_GUARD_THRESHOLD")) : (settings.threshold as number | undefined),
 		decisionsUrl: str("url", "RM_GUARD_URL", "http://localhost:4000/v1/decisions"),
 		decisionsModel: str("model", "RM_GUARD_MODEL", "gemma4"),
@@ -174,7 +178,12 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 			userRequests.push(prompt);
 		}
 		userRequests.splice(0, Math.max(0, userRequests.length - MAX_USER_REQUESTS));
-		const decision = await getBackend(ctx).decide({ command, cwd: ctx.cwd, userRequests, evidence });
+		let decision: DecisionOutcome;
+		try {
+			decision = await getBackend(ctx).decide({ command, cwd: ctx.cwd, userRequests, evidence });
+		} catch (error) {
+			decision = { error: error instanceof Error ? error.message : String(error) };
+		}
 
 		if ("error" in decision) {
 			return requireHuman(ctx, command, `decision model unavailable: ${decision.error}`, "model-error", userRequests);
@@ -230,6 +239,7 @@ export default function (pi: ExtensionAPI) {
 					baseUrl: config.decisionsUrl.replace(/\/decisions$/, ""),
 					models: [config.decisionsModel],
 					apiKey: config.providerApiKey,
+					timeoutMs: config.timeoutMs,
 				});
 			}
 		}

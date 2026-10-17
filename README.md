@@ -61,7 +61,8 @@ encoding. Other pi-known classifier models use `provider/model-id`, such as
 | `registerProvider` | `RM_GUARD_REGISTER_PROVIDER` (`1`/`0`) | `false` |
 | `keyFile` | `RM_GUARD_JEV_KEY_FILE` | `~/.secrets/jev.key` |
 
-Environment overrides settings. Config and provider registration resolve on the
+Environment overrides settings. Unknown backend values are configuration errors,
+not aliases for another engine. Config and provider registration resolve on the
 first routed command. `RM_GUARD_API_KEY` supplies an optional registered-provider
 key; classifier credentials otherwise come from pi.
 

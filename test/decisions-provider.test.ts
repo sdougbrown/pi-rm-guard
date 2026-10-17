@@ -57,6 +57,12 @@ test("missing choices are not fabricated from the first option", () => {
 	}), /missing choice/);
 });
 
+test("unknown choices are not fabricated from the first option", () => {
+	assert.throws(() => toPiAnswer({ type: "choice", instructions: "", criteria: { build: "b", system: "s" } }, {
+		type: "choice", probabilities: { A: 0.1, B: 0.9 }, choice: "zzz",
+	}));
+});
+
 test("letter-keyed choice probabilities map back to names", () => {
 	const answer = toPiAnswer({ type: "choice", instructions: "", criteria: { build: "b", system: "s" } }, {
 		type: "choice",

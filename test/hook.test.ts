@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { createServer } from "node:http";
-import { createRmGuard, type RmGuardConfig } from "../src/index.ts";
+import installRmGuard, { createRmGuard, type RmGuardConfig, type RmGuardSettings } from "../src/index.ts";
 import type { DecisionInput } from "../src/backends.ts";
 
 function branchEntry(message: unknown) {
@@ -33,7 +33,17 @@ interface HarnessOptions {
 	classifier?: string;
 	backend?: "classifier" | "decisions";
 	decisionsUrl?: string;
+	settings?: RmGuardSettings;
 }
+
+test("invalid backend settings block without inference when no UI is available", async (t) => {
+	t.mock.method(globalThis, "fetch", async () => assert.fail("invalid backend must not contact an endpoint"));
+	const h = harness({ command: "rm -rf dist", hasUI: false, settings: { backend: "classifer" } });
+	const result = await h.decide() as { block?: boolean; reason?: string };
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /classifer/);
+	assert.equal(h.stateCaptures.length, 0);
+});
 
 function harness(options: HarnessOptions) {
 	const { probabilities = { approve: 0.9, ask: 0.05, deny: 0.05 }, command } = options;
@@ -42,6 +52,7 @@ function harness(options: HarnessOptions) {
 	let confirmCalls = 0;
 	const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<unknown>> = {};
 	const pi = {
+		getSettings: () => ({ rmGuard: options.settings }),
 		on(name: string, fn: (event: unknown, ctx: unknown) => Promise<unknown>) {
 			handlers[name] = fn;
 		},
@@ -85,7 +96,8 @@ function harness(options: HarnessOptions) {
 		registerProvider: false,
 		providerApiKey: undefined,
 	};
-	createRmGuard(pi as never, () => config);
+	if (options.settings) installRmGuard(pi as never);
+	else createRmGuard(pi as never, () => config);
 	return {
 		ctx,
 		decide: async () => {

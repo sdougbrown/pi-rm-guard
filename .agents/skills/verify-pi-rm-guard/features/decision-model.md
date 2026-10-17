@@ -31,4 +31,12 @@ not disable later three-way judgments; backend unit tests exercise recovery.
 A valid fallback approval can authorize execution after a failed choice probe;
 the failure itself never supplies permission.
 
+The configured deadline reaches the registered provider's fetch and the live
+harness forwarder, without a shorter fixed cap. `provider-request.test.ts` checks
+both delayed success and expiry with virtual time. A slow local forwarding proof
+must also approve after more than 15 seconds when configured for 20 seconds:
+`node .agents/skills/verify-pi-rm-guard/helpers/slow-forward-proof.mjs` delays a
+fixture verdict for 16 seconds through the live forwarder. This is a transport
+proof, not a weights evaluation.
+
 See [verdicts.md](verdicts.md) for response handling.

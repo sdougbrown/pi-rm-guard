@@ -84,7 +84,7 @@ const decisions = http.createServer((req, res) => {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify(request),
-					signal: AbortSignal.timeout(15000),
+					signal: AbortSignal.timeout(Number(process.env.RM_GUARD_VERIFY_TIMEOUT_MS ?? 20000)),
 				});
 				const text = await response.text();
 				appendFileSync(`${stateDir}/decisions-responses.jsonl`, JSON.stringify({ status: response.status, body: text }) + "\n");
