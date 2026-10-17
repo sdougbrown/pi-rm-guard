@@ -35,7 +35,10 @@ Two shell constructs that do not affect what an `rm` deletes:
   data-consumer here-string stays inert (`cat <<< 'rm -rf /etc'` absent).
   The consumer window joins continuation lines ending in `\` or `|`; a
   trailing `&&` does not join (its left operand never feeds the heredoc
-  onward).
+  onward). `source`/`.` with a stdin file argument (`source /dev/stdin`)
+  is a stdin script reader too: its heredoc/here-string word is judged as a
+  script, while a file argument (`source x.sh <<'EOF'`) leaves the body
+  as data.
 
 Terminator matching is strict (a line must be exactly the delimiter; `<<-`
 allows leading tabs) — a line like `EOF; rm -rf dist` does not terminate a

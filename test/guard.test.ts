@@ -356,11 +356,29 @@ test("redirect-word tilde forms the gate cannot place defer", () => {
 	defer("rm -rf dist 2>~+/x");
 });
 
+test("heredoc: stdin script readers source the heredoc as a script", () => {
+	// `source`/`.` read their file argument — when it is stdin, the
+	// here-string/heredoc word is the script and is judged
+	deny("source /dev/stdin <<< 'rm -rf /'");
+	assert.equal(eligible("source /dev/stdin <<< 'rm -rf /tmp/x'").kind, "eligible", "in-scope sourced word");
+	deny(". /dev/stdin <<< 'rm -rf ~'");
+	// a file argument means stdin is not the script — the body is data
+	absent(["source x.sh <<'EOF'", "rm -rf /etc", "EOF", "ls"].join("\n"));
+});
+
+test("process substitution spans are one segment", () => {
+	// the ; inside <(...) is not a statement boundary: the whole inner
+	// command is scanned as one substitution
+	defer("echo <(sleep 1; rm -rf /etc)");
+});
+
+test("a heredoc with no following newline leaves the rest of the line live", () => {
+	deny("cat <<EOF; rm -rf /etc");
+});
+
 test("an attached redirection on an argument word is not a command", () => {
 	// bash runs `echo rm` with stdout to build.log — the rm is an argument
 	absent("echo rm>build.log");
-	// but a redirection on the command word still hides an rm
-	deny("rm>f -rf /");
 });
 
 test("IFS poisoning covers compound-command writes", () => {

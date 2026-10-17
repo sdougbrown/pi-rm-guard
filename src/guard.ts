@@ -84,11 +84,18 @@ function heredocFeedsInterpreter(command: string, heredocStart: number): boolean
 	for (const m of command.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{/g)) functions.add(m[1]);
 	// bash also accepts the `function name {` form (and POSIX `function name()`)
 	for (const m of command.matchAll(/function\s+([A-Za-z_][A-Za-z0-9_]*)\s*[{(]/g)) functions.add(m[1]);
-	return tokens.some((token) => {
-		if (/\$/.test(token)) return true;
-		const bare = token.replace(/^["']+|["']+$/g, "");
-		return SCRIPT_INTERPRETERS.has(bare.replace(/^.*\//, "")) || functions.has(bare);
-	});
+	// `source`/`.` read a FILE argument as a script — when that file is
+	// stdin, the heredoc/here-string word is the script
+	const stdinScript =
+		tokens.some((t) => t === "source" || t === ".") &&
+		tokens.some((t) => t === "/dev/stdin" || t === "/dev/fd/0" || t === "-");
+	return (
+		tokens.some((token) => {
+			if (/\$/.test(token)) return true;
+			const bare = token.replace(/^["']+|["']+$/g, "");
+			return SCRIPT_INTERPRETERS.has(bare.replace(/^.*\//, "")) || functions.has(bare);
+		}) || stdinScript
+	);
 }
 
 function hasUnresolvableChars(token: string): boolean {
@@ -170,9 +177,12 @@ function splitSegments(command: string): Segment[] {
 			i++;
 			continue;
 		}
-		if (ch === "$" && command[i + 1] === "(") {
+		if ((ch === "$" || ch === "<" || ch === ">") && command[i + 1] === "(") {
+			// $( and process substitutions <( / >( open a paren span: separators
+			// inside are not statement boundaries (parity with
+			// extractSubstitutions)
 			paren++;
-			current += "$(";
+			current += ch + "(";
 			i++;
 			continue;
 		}
@@ -261,6 +271,13 @@ function extractSubstitutions(segment: string): { remainder: string; inners: str
 			i += opener.length;
 			while (i < segment.length && depth > 0) {
 				const c = segment[i];
+				// escape parity with subshellSpan: an escaped char cannot close
+				// the span, so heredoc-body and live-segment verdicts agree
+				if (c === "\\" && i + 1 < segment.length) {
+					inner += c + segment[i + 1];
+					i += 2;
+					continue;
+				}
 				if (c === "(" && closer === ")") depth++;
 				if (c === closer) depth--;
 				if (depth > 0) inner += c;
@@ -413,9 +430,11 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 			i++;
 			continue;
 		}
-		if (ch === "$" && command[i + 1] === "(") {
+		if ((ch === "$" || ch === "<" || ch === ">") && command[i + 1] === "(") {
+			// $( and process substitutions <( / >( open a paren span (parity
+			// with splitSegments): a heredoc inside one is not top-level
 			paren++;
-			out += "$(";
+			out += ch + "(";
 			i += 2;
 			continue;
 		}
@@ -787,20 +806,26 @@ const SYSTEM_ROOTS = ["/etc", "/usr", "/var", "/boot", "/bin", "/sbin", "/lib", 
  * A target is model-eligible only when every resolved target is strictly inside
  * cwd or /tmp. Three outcomes: in scope (model may approve), denied (never —
  * filesystem root, system trees, the whole home directory, or a cwd ancestor),
- * or outside scope (human decision).
+ * or outside scope (human decision). In redirect mode — for redirection words,
+ * which truncate rather than delete — /dev/null is exempt and system paths are
+ * outside-scope (human) instead of denied, so one function owns all scope rules.
  */
-export function isTargetInScope(targets: string[], cwd: string, tmpReal: string): ScopeVerdict {
+export function isTargetInScope(targets: string[], cwd: string, tmpReal: string, redirectMode = false): ScopeVerdict {
 	const resolved: string[] = [];
 	const cwdReal = resolveReal(cwd, cwd);
 	const homeReal = process.env.HOME ? resolveReal(process.env.HOME, cwd) : "";
 	for (const target of targets) {
 		const real = resolveReal(target, cwd);
 		resolved.push(real);
+		if (redirectMode && real === "/dev/null") continue; // truncating it is harmless
 		if (real === "/") {
 			return { inScope: false, denied: true, reason: `${target} is the filesystem root`, resolved };
 		}
 		for (const root of SYSTEM_ROOTS) {
 			if (isUnder(real, root)) {
+				if (redirectMode) {
+					return { inScope: false, denied: false, reason: `${target} resolves outside the session and /tmp`, resolved };
+				}
 				return { inScope: false, denied: true, reason: `${target} is a system path (${root})`, resolved };
 			}
 		}
@@ -959,9 +984,12 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 		if (word.startsWith("~") && word !== "~" && !word.startsWith("~/")) {
 			return { kind: "defer", reason: `redirection expands via unhandled tilde form: ${word}` };
 		}
-		const real = resolveReal(expandTilde(word, home), cwd);
-		if (real === "/dev/null" || isUnder(real, resolveReal(cwd, cwd)) || isUnder(real, tmpReal)) continue;
-		return { kind: "defer", reason: `redirection target is outside the session and /tmp: ${word}` };
+		// redirect mode: one scope function owns the rules (in cwd, under /tmp,
+		// /dev/null exempt; everything else — including system paths — is a
+		// human decision, since the word truncates rather than deletes)
+		const scope = isTargetInScope([expandTilde(word, home)], cwd, tmpReal, true);
+		if (scope.denied) return { kind: "deny", reason: scope.reason };
+		if (!scope.inScope) return { kind: "defer", reason: `redirection target ${scope.reason}` };
 	}
 	const scope = isTargetInScope(targets, cwd, tmpReal);
 	if (scope.denied) return { kind: "deny", reason: scope.reason };
