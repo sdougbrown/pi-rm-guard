@@ -54,15 +54,16 @@ const chat = http.createServer((req, res) => {
 	req.on("end", () => {
 		appendFileSync(`${stateDir}/chat-requests.jsonl`, body + "\n");
 		const parsed = JSON.parse(body);
-		const sawToolResult = parsed.messages?.some((m) => m.role === "tool");
+		const directive = readJSON(`${stateDir}/directive.json`, {});
+		const toolResults = parsed.messages?.filter((m) => m.role === "tool").length ?? 0;
 		res.setHeader("content-type", "text/event-stream");
-		if (sawToolResult) {
+		if (toolResults >= (directive.setupCommand ? 2 : 1)) {
 			res.write(sseChunk({ role: "assistant", content: "done" }));
 			res.write(sseChunk({}, "stop"));
 		} else {
-			const directive = readJSON(`${stateDir}/directive.json`, {});
-			res.write(sseChunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: "" } }] }));
-			res.write(sseChunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ command: directive.command }) } }] }));
+			const command = directive.setupCommand && toolResults === 0 ? directive.setupCommand : directive.command;
+			res.write(sseChunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${toolResults + 1}`, type: "function", function: { name: "bash", arguments: "" } }] }));
+			res.write(sseChunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ command }) } }] }));
 			res.write(sseChunk({}, "tool_calls"));
 		}
 		res.write("data: [DONE]\n\n");
@@ -73,8 +74,29 @@ const chat = http.createServer((req, res) => {
 const decisions = http.createServer((req, res) => {
 	let body = "";
 	req.on("data", (c) => (body += c));
-	req.on("end", () => {
+	req.on("end", async () => {
 		appendFileSync(`${stateDir}/decisions-requests.jsonl`, body + "\n");
+		if (process.env.RM_GUARD_VERIFY_LIVE_URL && process.argv[3] !== "--selftest") {
+			try {
+				const request = JSON.parse(body);
+				request.model = process.env.RM_GUARD_VERIFY_LIVE_MODEL ?? "gemma4";
+				const response = await fetch(process.env.RM_GUARD_VERIFY_LIVE_URL, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(request),
+					signal: AbortSignal.timeout(15000),
+				});
+				const text = await response.text();
+				appendFileSync(`${stateDir}/decisions-responses.jsonl`, JSON.stringify({ status: response.status, body: text }) + "\n");
+				res.statusCode = response.status;
+				res.setHeader("content-type", "application/json");
+				res.end(text);
+			} catch (err) {
+				res.statusCode = 502;
+				res.end(JSON.stringify({ error: String(err) }));
+			}
+			return;
+		}
 		const DECISION_FILE = `${stateDir}/decision.json`;
 		let decision;
 		try {

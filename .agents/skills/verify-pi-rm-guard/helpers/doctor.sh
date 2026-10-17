@@ -10,10 +10,9 @@ pi --version >/dev/null 2>&1 || { echo "FAIL: pi does not run"; ok=0; }
 
 [ -f "$REPO/src/index.ts" ] || { echo "FAIL: extension entry $REPO/src/index.ts missing"; ok=0; }
 
-# The guard's own static tests must pass — if these are red, driving pi tells
-# you nothing the tests don't already.
+# Check hook and backend regressions before driving the complete pipeline.
 if ! (cd "$REPO" && npm test >/dev/null 2>&1); then
-	echo "FAIL: npm test does not pass; fix the static gate before verifying behavior"
+	echo "FAIL: npm test does not pass; fix the regression before verifying behavior"
 	ok=0
 fi
 

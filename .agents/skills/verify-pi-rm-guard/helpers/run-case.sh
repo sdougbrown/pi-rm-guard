@@ -36,6 +36,8 @@ if [ -z "$CASE_DIR" ]; then
 	exit 1
 fi
 mkdir -p "$CASE_DIR/workspace" "$CASE_DIR/agent" "$CASE_DIR/sessions" "$CASE_DIR/stub"
+VICTIM="$CASE_DIR/victim"
+COMMAND="${COMMAND//@VICTIM@/$VICTIM}"
 
 # --- start stub engines (record PID; never kill by name) ---------------------
 node "$SKILL_DIR/helpers/stub-servers.mjs" "$CASE_DIR/stub" > "$CASE_DIR/stub/stdout.json" &
@@ -53,7 +55,8 @@ DEC_PORT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.a
 CHAT_PORT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).chatPort)' "$CASE_DIR/stub/ports.json")"
 
 # --- deterministic engines ----------------------------------------------------
-printf '{"command":%s}\n' "$(node -e 'console.log(JSON.stringify(process.argv[1]))' "$COMMAND")" > "$CASE_DIR/stub/directive.json"
+node -e 'console.log(JSON.stringify({command: process.argv[1], setupCommand: process.argv[2] || undefined}))' \
+	"$COMMAND" "${RM_GUARD_VERIFY_SETUP_COMMAND:-}" > "$CASE_DIR/stub/directive.json"
 printf '%s\n' "$DECISION" > "$CASE_DIR/stub/decision.json"
 
 # --- disposable pi agent dir: stub provider only ------------------------------
@@ -61,24 +64,36 @@ cat > "$CASE_DIR/agent/models.json" <<EOF
 {"providers":{"stub":{"baseUrl":"http://127.0.0.1:${CHAT_PORT}/v1","api":"openai-completions","apiKey":"dummy","models":[{"id":"stub","name":"Stub","input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":32000,"maxTokens":1000}]}}}
 EOF
 
+node -e '
+const fs = require("fs");
+fs.writeFileSync(process.argv[1], JSON.stringify({rmGuard: {
+	backend: process.env.RM_GUARD_VERIFY_BACKEND ?? "decisions",
+	registerProvider: true,
+	classifier: "decisions/stub",
+	url: `http://127.0.0.1:${process.argv[2]}/v1/decisions`,
+	model: "stub",
+	timeoutMs: 20000,
+	keyFile: "/nonexistent/rmguard-test-key",
+}}));
+' "$CASE_DIR/agent/settings.json" "$DEC_PORT"
+
 # --- the file the command is supposed to delete -------------------------------
-mkdir -p /tmp/rmguard-verify-victim
-echo data > /tmp/rmguard-verify-victim/marker
+mkdir -p "$VICTIM"
+echo data > "$VICTIM/marker"
 
 cd "$CASE_DIR/workspace"
 set +e
+env -u RM_GUARD_BACKEND -u RM_GUARD_REGISTER_PROVIDER -u RM_GUARD_CLASSIFIER \
+	-u RM_GUARD_URL -u RM_GUARD_MODEL -u RM_GUARD_TIMEOUT_MS -u RM_GUARD_THRESHOLD \
+	-u RM_GUARD_API_KEY -u RM_GUARD_JEV_KEY_FILE \
 PI_CODING_AGENT_DIR="$CASE_DIR/agent" \
-RM_GUARD_BACKEND=decisions \
-RM_GUARD_URL="http://127.0.0.1:${DEC_PORT}/v1/decisions" \
-RM_GUARD_MODEL=stub \
-RM_GUARD_TIMEOUT_MS=3000 \
 pi -p --no-extensions -e "$REPO/src/index.ts" --no-mcp --offline --no-skills --no-prompt-templates \
 	--session-dir "$CASE_DIR/sessions" "delete the build artifacts" \
 	> "$CASE_DIR/output.txt" 2>&1
 PI_EXIT=$?
 set -e
 
-MARKER_STATE="$([ -f /tmp/rmguard-verify-victim/marker ] && echo SURVIVED || echo DELETED)"
+MARKER_STATE="$([ -f "$VICTIM/marker" ] && echo SURVIVED || echo DELETED)"
 echo "case:      $CASE"
 echo "command:   $COMMAND"
 echo "pi exit:   $PI_EXIT"
@@ -109,18 +124,16 @@ echo "evidence:  $CASE_DIR"
 # Entry tokens are simple field checks against any one rm-guard entry
 # (e.g. "gate=denied", "action=approve autoApproved=true"); "absent" requires
 # no rm-guard entry at all; "targets=[]" an empty, "targets=+" a non-empty list.
-# glob-* expectations follow the glob-unbounded case name; gate-side glob
-# expansion and its feature doc (features/glob-targets.md) live on the stacked
-# glob-expansion branch — on this branch every glob defers, so only
-# glob-unbounded is asserted here.
 expectation_for() {
 	case "$1" in
-		approve)          echo "DELETED|action=approve autoApproved=true|1" ;;
-		eligible-literal) echo "DELETED|action=approve autoApproved=true|1" ;;
-		low-conf)         echo "SURVIVED|gate=low-confidence autoApproved=false|1" ;;
-		deny|deny-root)   echo "SURVIVED|gate=denied|0" ;;
-		defer|defer-glob|defer-var|glob-unbounded) echo "SURVIVED|gate=ineligible|0" ;;
-		absent)           echo "DELETED|absent|0" ;;
+		approve|approve-var|approve-glob|approve-home|approve-redirect|heredoc-bash|heredoc-sub|non-recursive|context)
+			echo "DELETED|action=approve autoApproved=true|1" ;;
+		heredoc-quoted|git-rm-cached)
+			echo "SURVIVED|action=approve autoApproved=true|1" ;;
+		deny) echo "SURVIVED|action=deny autoApproved=false|1" ;;
+		defer|low-conf) echo "SURVIVED|gate=model-ask autoApproved=false|1" ;;
+		model-error) echo "SURVIVED|gate=model-error autoApproved=false|1" ;;
+		absent) echo "DELETED|absent|0" ;;
 		*)                echo "" ;;
 	esac
 }
@@ -133,6 +146,7 @@ fi
 IFS='|' read -r WANT_MARKER WANT_ENTRY WANT_CALLS <<< "$EXPECT"
 
 ASSERT_FAIL=""
+[ "$PI_EXIT" = 0 ] || ASSERT_FAIL="pi exited $PI_EXIT"
 [ "$MARKER_STATE" = "$WANT_MARKER" ] || ASSERT_FAIL="marker expected $WANT_MARKER, got $MARKER_STATE"
 ENTRY_OK=1
 node -e '
@@ -157,6 +171,17 @@ process.exit(ok ? 0 : 1);
 ' "$WANT_ENTRY" "$CASE_DIR/entries.jsonl" || ENTRY_OK=0
 [ "$ENTRY_OK" = 1 ] || ASSERT_FAIL="${ASSERT_FAIL:+$ASSERT_FAIL; }no rm-guard session entry matching '$WANT_ENTRY'"
 [ "$DEC_CALLS" = "$WANT_CALLS" ] || ASSERT_FAIL="${ASSERT_FAIL:+$ASSERT_FAIL; }decisions calls expected $WANT_CALLS, got $DEC_CALLS"
+
+if [ "$CASE" = context ]; then
+	node -e '
+const fs = require("fs");
+const calls = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+const raw = calls.at(-1)?.input;
+const input = typeof raw === "string" ? raw : JSON.stringify(raw ?? "");
+if (!input.includes(process.argv[2]) || !input.includes("generated-fixture-context") || !input.includes("delete the build artifacts")) process.exit(1);
+' "$CASE_DIR/stub/decisions-requests.jsonl" "$CASE_DIR/workspace" \
+		|| ASSERT_FAIL="${ASSERT_FAIL:+$ASSERT_FAIL; }decision request missing cwd, current user request, or prior tool-result evidence"
+fi
 
 if [ -n "$ASSERT_FAIL" ]; then
 	echo "assert: FAIL ($CASE) — $ASSERT_FAIL"

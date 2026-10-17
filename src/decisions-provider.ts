@@ -69,7 +69,9 @@ export function toPiAnswer(q: PiQuestion, a: WireAnswer): Record<string, unknown
 export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsProviderOptions): void {
 	const baseUrl = options.baseUrl.replace(/\/+$/, "");
 	pi.registerProvider("decisions", {
-		...(options.apiKey ? { apiKey: options.apiKey } : {}),
+		// ProviderConfig requires an apiKey for defined models (no oauth here);
+		// the empty literal declares an unauthenticated endpoint.
+		apiKey: options.apiKey ?? "",
 		models: options.models.map((id) => ({
 			type: "classifier" as const,
 			id,

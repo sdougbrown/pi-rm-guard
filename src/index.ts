@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClassifierBackend, createDecisionsBackend, type DecisionBackend } from "./backends.ts";
-import { analyzeCommand } from "./guard.ts";
+import { mayInvokeRm } from "./detect.ts";
 import { registerDecisionsProvider } from "./decisions-provider.ts";
 
 export interface RmGuardConfig {
 	/** "decisions": a /v1/decisions endpoint. "classifier": any pi-known classifier model. */
 	backend: "decisions" | "classifier";
+	/** Auto-approval threshold override; when unset each backend uses its own default. */
 	threshold?: number;
 	decisionsUrl: string;
 	decisionsModel: string;
@@ -43,6 +44,8 @@ function readRmGuardSettings(pi: ExtensionAPI): RmGuardSettings | undefined {
 /**
  * Precedence: environment variables > pi settings `rmGuard` block > defaults.
  * Env is the per-machine override; the settings block is the portable config.
+ * pi merges global and project settings (PI_CODING_AGENT_DIR-aware) before
+ * this sees them.
  */
 export function resolveConfig(pi: ExtensionAPI): RmGuardConfig {
 	const settings = readRmGuardSettings(pi) ?? {};
@@ -77,21 +80,60 @@ function readKeyFile(file: string): string | undefined {
 	}
 }
 
-function recentUserMessages(pi: ExtensionAPI, limit: number): string[] {
+const MAX_USER_REQUESTS = 5;
+const MAX_EVIDENCE = 8;
+const MAX_SNIPPET = 1000;
+
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.flatMap((block) => (block && typeof block === "object" && block.type === "text" && typeof block.text === "string" ? [block.text] : []))
+			.join(" ");
+	}
+	return "";
+}
+
+function snippet(text: string): string {
+	if (text.length <= MAX_SNIPPET) return text;
+	const half = Math.floor(MAX_SNIPPET / 2);
+	return `${text.slice(0, half)}\n[...truncated...]\n${text.slice(-half)}`;
+}
+
+/**
+ * Recent user requests and assistant tool-call/result evidence, walked newest
+ * first from the session branch and returned in chronological order.
+ */
+function sessionContext(ctx: { sessionManager: { getBranch(): { type: string; message?: { role?: string; content?: unknown } }[] } }): {
+	userRequests: string[];
+	evidence: string[];
+} {
 	try {
-		const branch = pi.sessionManager.getBranch();
-		const messages: string[] = [];
-		for (let i = branch.length - 1; i >= 0 && messages.length < limit; i--) {
+		const branch = ctx.sessionManager.getBranch();
+		const userRequests: string[] = [];
+		const evidence: string[] = [];
+		for (let i = branch.length - 1; i >= 0 && (userRequests.length < MAX_USER_REQUESTS || evidence.length < MAX_EVIDENCE); i--) {
 			const entry = branch[i];
-			if (entry.type === "message" && entry.message.role === "user") {
+			if (entry.type !== "message" || !entry.message) continue;
+			if (entry.message.role === "user" && userRequests.length < MAX_USER_REQUESTS) {
+				const text = messageText(entry.message.content).trim();
+				if (text.length > 0) userRequests.unshift(snippet(text));
+			} else if (entry.message.role === "assistant" && evidence.length < MAX_EVIDENCE) {
 				const content = entry.message.content;
-				const text = typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join(" ");
-				if (text.trim().length > 0) messages.unshift(text.trim());
+				if (!Array.isArray(content)) continue;
+				for (const block of content.toReversed()) {
+					if (block && typeof block === "object" && block.type === "toolCall" && evidence.length < MAX_EVIDENCE) {
+						evidence.unshift(snippet(`${(block as { name?: string }).name}: ${JSON.stringify((block as { arguments?: unknown }).arguments)}`));
+					}
+				}
+			} else if (entry.message.role === "toolResult" && evidence.length < MAX_EVIDENCE) {
+				const text = messageText(entry.message.content).trim();
+				if (text.length > 0) evidence.unshift(snippet(`result: ${text}`));
 			}
 		}
-		return messages;
+		return { userRequests, evidence };
 	} catch {
-		return [];
+		return { userRequests: [], evidence: [] };
 	}
 }
 
@@ -100,18 +142,22 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 	let backend: DecisionBackend | undefined;
 	const getBackend = (ctx: { modelRegistry: unknown }): DecisionBackend => {
 		const config = getConfig();
-		const [classifierProvider, classifierModelId] = config.classifier.split("/");
+		const separator = config.classifier.indexOf("/");
+		const classifierProvider = config.classifier.slice(0, separator);
+		const classifierModelId = config.classifier.slice(separator + 1);
 		return (backend ??= config.backend === "classifier"
 				? createClassifierBackend(ctx.modelRegistry as never, {
 						provider: classifierProvider,
 						modelId: classifierModelId,
 						apiKey: config.classifierApiKey,
+						timeoutMs: config.timeoutMs,
+						threshold: config.threshold,
 					})
-				: createDecisionsBackend({ url: config.decisionsUrl, model: config.decisionsModel, timeoutMs: config.timeoutMs }));
+				: createDecisionsBackend({ url: config.decisionsUrl, model: config.decisionsModel, timeoutMs: config.timeoutMs, threshold: config.threshold }));
 	};
 
-	// The current turn's user message is not yet in getBranch() when tool_call
-	// fires, so the prompt is captured at agent start and used as the intent.
+	// Capture the current request at agent start.
+	// It remains available even if the branch snapshot omits it.
 	let currentPrompt = "";
 	pi.on("before_agent_start", async (event) => {
 		currentPrompt = event.prompt.trim();
@@ -120,34 +166,27 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "bash") return undefined;
 		const command = event.input.command;
-		if (typeof command !== "string") return undefined;
+		if (typeof command !== "string" || !mayInvokeRm(command)) return undefined;
 
-		const analysis = analyzeCommand(command, ctx.cwd);
-		if (analysis.kind === "absent") return undefined;
-		if (analysis.kind === "deny") {
-			pi.appendEntry("rm-guard", { command, gate: "denied", reason: analysis.reason, intent: [], autoApproved: false });
-			return { block: true, reason: `rm-guard: auto-denied — ${analysis.reason}` };
+		const { userRequests, evidence } = sessionContext(ctx);
+		const prompt = snippet(currentPrompt);
+		if (prompt.length > 0 && userRequests[userRequests.length - 1] !== prompt) {
+			userRequests.push(prompt);
 		}
-		if (analysis.kind === "defer") {
-			return requireHuman(ctx, command, analysis.reason, "ineligible", []);
-		}
-
-		const recent = recentUserMessages(pi, 2);
-		const intentParts = [...recent, currentPrompt].filter((m) => m.length > 0 && !recent.includes(m));
-		const intent = intentParts.join(" | ") || "(no recent user request in session)";
-		const decision = await getBackend(ctx).decide({ command, intent, targets: analysis.targets });
+		userRequests.splice(0, Math.max(0, userRequests.length - MAX_USER_REQUESTS));
+		const decision = await getBackend(ctx).decide({ command, cwd: ctx.cwd, userRequests, evidence });
 
 		if ("error" in decision) {
-			return requireHuman(ctx, command, `decision model unavailable: ${decision.error}`, "model-error", [intent]);
+			return requireHuman(ctx, command, `decision model unavailable: ${decision.error}`, "model-error", userRequests);
 		}
 
 		pi.appendEntry("rm-guard", {
 			command,
 			backend: getBackend(ctx).name,
-			intent,
+			userRequests,
+			evidence,
 			action: decision.action,
 			probability: decision.probability,
-			targets: analysis.targets,
 			autoApproved: decision.action === "approve",
 		});
 
@@ -159,7 +198,7 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 			return { block: true, reason: `rm-guard: ${getBackend(ctx).name} denied (${decision.probability.toFixed(2)}): ${command}` };
 		}
 
-		return requireHuman(ctx, command, `model chose ${decision.label} (p=${decision.probability.toFixed(2)}) — deferring to human`, "low-confidence", [intent]);
+		return requireHuman(ctx, command, `model chose ${decision.label} (p=${decision.probability.toFixed(2)}) — deferring to human`, "model-ask", userRequests);
 	});
 
 	function requireHuman(
@@ -167,14 +206,14 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 		command: string,
 		reason: string,
 		gate: string,
-		intent: string[],
+		userRequests: string[],
 	) {
-		pi.appendEntry("rm-guard", { command, gate, reason, intent, autoApproved: false });
+		pi.appendEntry("rm-guard", { command, gate, reason, userRequests, autoApproved: false });
 		if (!ctx.hasUI) {
 			return { block: true, reason: `rm-guard: "${command}" requires approval and no UI is available (${reason})` };
 		}
 		return ctx.ui
-			.confirm("rm-guard: approve recursive delete?", `${command}\n\n${reason}`)
+			.confirm("rm-guard: approve this rm command?", `${command}\n\n${reason}`)
 			.then((approved) => (approved ? undefined : { block: true, reason: "Blocked by user" }));
 	}
 }
