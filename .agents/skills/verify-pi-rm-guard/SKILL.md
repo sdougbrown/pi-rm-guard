@@ -74,6 +74,9 @@ and the current user request reach the decision model.
 For live proofs, `RM_GUARD_VERIFY_LIVE_URL` makes the decision stub forward to real
 weights and record the response. The decision-json argument is then ignored.
 Do not use this mode with `run-suite.sh`: its deny/ask cases require stubbed verdicts.
+`RM_GUARD_VERIFY_API_KEY` configures an endpoint token for authenticated proofs.
+The stub requires that token and forwards it in live mode. The suite uses only
+a fixture token and checks both backend routes.
 
 ## Evidence and cleanup
 

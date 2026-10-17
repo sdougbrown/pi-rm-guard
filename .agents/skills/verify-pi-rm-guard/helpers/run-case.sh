@@ -90,6 +90,7 @@ set +e
 env -u RM_GUARD_BACKEND -u RM_GUARD_REGISTER_PROVIDER -u RM_GUARD_CLASSIFIER \
 	-u RM_GUARD_URL -u RM_GUARD_MODEL -u RM_GUARD_TIMEOUT_MS -u RM_GUARD_THRESHOLD \
 	-u RM_GUARD_API_KEY -u RM_GUARD_JEV_KEY_FILE \
+RM_GUARD_API_KEY="${RM_GUARD_VERIFY_API_KEY:-}" \
 PI_CODING_AGENT_DIR="$CASE_DIR/agent" \
 pi -p --no-extensions -e "$REPO/src/index.ts" --no-mcp --offline --no-skills --no-prompt-templates \
 	--session-dir "$CASE_DIR/sessions" "delete the build artifacts" \
@@ -131,7 +132,7 @@ echo "evidence:  $CASE_DIR"
 # model-verdict entries.
 expectation_for() {
 	case "$1" in
-		approve|approve-var|approve-glob|approve-redirect|heredoc-bash|heredoc-sub|non-recursive|context)
+		approve|approve-auth|approve-var|approve-glob|approve-redirect|heredoc-bash|heredoc-sub|non-recursive|context)
 			echo "DELETED|action=approve autoApproved=true|1" ;;
 		heredoc-quoted)
 			echo "SURVIVED|action=approve autoApproved=true|1" ;;

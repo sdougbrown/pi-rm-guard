@@ -1,4 +1,7 @@
 import { strict as assert } from "node:assert";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { resolveConfig, type RmGuardSettings } from "../src/index.ts";
 
@@ -62,4 +65,26 @@ test("a throwing getSettings falls back to defaults instead of propagating", () 
 	assert.equal(c.backend, "classifier");
 	assert.equal(c.classifier, "typesafe/jev-latest");
 	assert.equal(c.decisionsUrl, "http://localhost:4000/v1/decisions");
+});
+
+test("legacy key-file fallback: trimmed key from $HOME/.secrets/jev.key", () => {
+	const tmpHome = mkdtempSync(join(tmpdir(), "rm-guard-home-"));
+	const keyFile = join(tmpHome, ".secrets", "jev.key");
+	const savedHome = process.env.HOME;
+	const savedKey = process.env.TYPESAFE_API_KEY;
+	try {
+		mkdirSync(dirname(keyFile), { recursive: true });
+		delete process.env.TYPESAFE_API_KEY;
+		process.env.HOME = tmpHome;
+		writeFileSync(keyFile, "  jev-secret-key-123  \n");
+		assert.equal(resolveConfig(fakePi({})).classifierApiKey, "jev-secret-key-123");
+		writeFileSync(keyFile, "   \n\t\n");
+		assert.equal(resolveConfig(fakePi({})).classifierApiKey, undefined);
+	} finally {
+		if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY;
+		else process.env.TYPESAFE_API_KEY = savedKey;
+		if (savedHome === undefined) delete process.env.HOME;
+		else process.env.HOME = savedHome;
+		rmSync(tmpHome, { recursive: true, force: true });
+	}
 });

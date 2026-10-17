@@ -3,15 +3,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 /**
  * Registers the llama.cpp-router-style /v1/decisions API as a pi classifier
  * provider, so `findOfType("classifier", "decisions", <model>)` works anywhere
- * in pi (rm-guard, codemode scripts, other extensions) with keys resolved
- * through pi's own credential config.
+ * in pi (rm-guard, codemode scripts, other extensions). Callers can supply
+ * an endpoint token or leave it unauthenticated.
  */
 
 export interface DecisionsProviderOptions {
 	/** Base URL up to /v1, e.g. http://grace:4000/v1 */
 	baseUrl: string;
 	models: string[];
-	/** Resolved by pi from $ENV / !command interpolation before it reaches here. */
+	/** Optional Bearer token for this endpoint. */
 	apiKey?: string;
 	timeoutMs?: number;
 }
@@ -29,6 +29,28 @@ interface WireAnswer {
 	probabilities?: Record<string, number>;
 	choice?: string;
 	score?: number;
+}
+
+export async function requestDecisions(options: {
+	url: string;
+	model: string;
+	input: unknown;
+	questions: WireQuestion[];
+	timeoutMs: number;
+	apiKey?: string;
+	fetch?: typeof fetch;
+}): Promise<{ answers?: Record<string, WireAnswer> }> {
+	const response = await (options.fetch ?? globalThis.fetch)(options.url, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
+		},
+		body: JSON.stringify({ model: options.model, input: options.input, questions: options.questions }),
+		signal: AbortSignal.timeout(options.timeoutMs),
+	});
+	if (!response.ok) throw new Error(`decisions API ${response.status}`);
+	return await response.json() as { answers?: Record<string, WireAnswer> };
 }
 
 type PiQuestion =
@@ -105,17 +127,11 @@ export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsPr
 					for (const [id, q] of Object.entries(context.questions as Record<string, PiQuestion>)) {
 						questions[id] = toWireQuestion(id, q);
 					}
-					const response = await fetch(`${baseUrl}/decisions`, {
-						method: "POST",
-						headers: {
-							"Content-Type": "application/json",
-							...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
-						},
-						body: JSON.stringify({ model: model.id, input: context.state, questions: Object.values(questions) }),
-						signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
+					const body = await requestDecisions({
+						url: `${baseUrl}/decisions`, model: model.id, input: context.state,
+						questions: Object.values(questions), timeoutMs: options.timeoutMs ?? 10_000,
+						apiKey: options.apiKey,
 					});
-					if (!response.ok) throw new Error(`decisions API ${response.status}`);
-					const body = (await response.json()) as { answers?: Record<string, WireAnswer> };
 					for (const [id, q] of Object.entries(context.questions as Record<string, PiQuestion>)) {
 						const wire = body.answers?.[id];
 						if (!wire) throw new Error(`decisions API missing answer for ${id}`);

@@ -5,7 +5,9 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 test("live evaluation reports unavailable judgments as failures, never successful rejections", async (t) => {
-	const server = createServer((_request, response) => {
+	let authenticatedRequests = 0;
+	const server = createServer((request, response) => {
+		if (request.headers.authorization === "Bearer fixture-token") authenticatedRequests++;
 		response.writeHead(500);
 		response.end("model unavailable");
 	});
@@ -14,7 +16,7 @@ test("live evaluation reports unavailable judgments as failures, never successfu
 	const address = server.address();
 	assert.ok(address && typeof address === "object");
 	const child = spawn(process.execPath, [fileURLToPath(new URL("../scripts/eval-live.ts", import.meta.url))], {
-		env: { ...process.env, TYPESAFE_API_KEY: "", RM_GUARD_URL: `http://127.0.0.1:${address.port}/v1/decisions` },
+		env: { ...process.env, TYPESAFE_API_KEY: "", RM_GUARD_API_KEY: "fixture-token", RM_GUARD_URL: `http://127.0.0.1:${address.port}/v1/decisions` },
 	});
 	let output = "";
 	child.stdout.on("data", (chunk) => { output += chunk; });
@@ -23,6 +25,7 @@ test("live evaluation reports unavailable judgments as failures, never successfu
 		child.on("error", reject);
 		child.on("close", resolve);
 	});
+	assert.ok(authenticatedRequests > 0, "the eval forwards the configured endpoint token");
 	assert.equal(code, 1);
 	assert.match(output, /FAIL decisions error/);
 	assert.doesNotMatch(output, /\bok\s+decisions error/);

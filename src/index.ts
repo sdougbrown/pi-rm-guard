@@ -157,7 +157,7 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 						timeoutMs: config.timeoutMs,
 						threshold: config.threshold,
 					})
-				: createDecisionsBackend({ url: config.decisionsUrl, model: config.decisionsModel, timeoutMs: config.timeoutMs, threshold: config.threshold }));
+				: createDecisionsBackend({ url: config.decisionsUrl, model: config.decisionsModel, timeoutMs: config.timeoutMs, threshold: config.threshold, apiKey: config.providerApiKey }));
 	};
 
 	// Capture the current request at agent start.

@@ -80,13 +80,18 @@ const decisions = http.createServer((req, res) => {
 	req.on("data", (c) => (body += c));
 	req.on("end", async () => {
 		appendFileSync(`${stateDir}/decisions-requests.jsonl`, body + "\n");
+		const expectedKey = process.env.RM_GUARD_VERIFY_API_KEY;
+		if (expectedKey && req.headers.authorization !== `Bearer ${expectedKey}`) {
+			res.writeHead(401).end();
+			return;
+		}
 		if (process.env.RM_GUARD_VERIFY_LIVE_URL && process.argv[3] !== "--selftest") {
 			try {
 				const request = JSON.parse(body);
 				request.model = process.env.RM_GUARD_VERIFY_LIVE_MODEL ?? "gemma4";
 				const response = await fetch(process.env.RM_GUARD_VERIFY_LIVE_URL, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}) },
 					body: JSON.stringify(request),
 					signal: AbortSignal.timeout(Number(process.env.RM_GUARD_VERIFY_TIMEOUT_MS ?? 20000)),
 				});
@@ -176,7 +181,7 @@ if (process.argv[3] === "--selftest") {
 		// echoing the known decision.json.
 		const decRes = await fetch(`http://127.0.0.1:${decPort}/v1/decisions`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", ...(process.env.RM_GUARD_VERIFY_API_KEY ? { authorization: `Bearer ${process.env.RM_GUARD_VERIFY_API_KEY}` } : {}) },
 			body: JSON.stringify({ command: directive.command, intent: "selftest" }),
 		});
 		if (!decRes.ok) fail(`decisions endpoint returned HTTP ${decRes.status}`);

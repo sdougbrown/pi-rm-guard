@@ -7,6 +7,7 @@ fixture deletion. Only the model response changes the outcome.
 | Case | Stub response | Expected effect |
 |---|---|---|
 | `approve` | Approve, p=0.95 | Marker deleted; `action=approve`, `autoApproved=true` |
+| `approve-auth` | Approve behind a token-protected endpoint, both backend routes | Marker deleted; one authenticated request |
 | `deny` | Deny, p=0.998 | Marker preserved; `action=deny`, `autoApproved=false` |
 | `defer` | Ask, p=0.94 | Marker preserved; `gate=model-ask` |
 | `low-conf` | Approve below threshold, p=0.5 | Marker preserved; `gate=model-ask` |

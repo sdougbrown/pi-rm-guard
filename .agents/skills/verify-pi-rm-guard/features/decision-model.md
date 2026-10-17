@@ -2,8 +2,10 @@
 
 The model judges the whole command from its text, cwd, recent user requests,
 and bounded recent tool evidence. No static target list is presented as verified.
-Direct and registered-provider requests use the same structured state and question
-encoder and choice-label decoder. The decision stub rejects incorrect endpoint
+Direct and registered-provider requests use the same HTTP client, structured
+state, question encoder, and choice-label decoder. `RM_GUARD_API_KEY` supplies an
+optional Bearer token on both routes; protected-service tests cover missing,
+incorrect, and valid tokens. The standalone live eval forwards the token too. The decision stub rejects incorrect endpoint
 paths, so real-pi cases also check URL construction during valid provider setup.
 One per-label criteria definition supplies choice options, classifier
 criteria, and boolean fallback criteria. A unit test compares both wire payloads.

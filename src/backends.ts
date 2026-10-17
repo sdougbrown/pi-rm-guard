@@ -2,7 +2,7 @@
  * Decision backends judge a raw command from session evidence.
  * Only valid model responses authorize execution; without one, errors escalate.
  */
-import { resolveChoice, toWireQuestion } from "./decisions-provider.ts";
+import { requestDecisions, resolveChoice, toWireQuestion } from "./decisions-provider.ts";
 
 export interface DecisionInput {
 	/** The raw, unmodified command text — no parsing or target resolution. */
@@ -34,6 +34,7 @@ export interface DecisionsBackendOptions {
 	url: string;
 	model: string;
 	timeoutMs: number;
+	apiKey?: string;
 	/** Auto-approval threshold; default 0.85. */
 	threshold?: number;
 	/** Injectable for tests. Defaults to globalThis.fetch. */
@@ -74,10 +75,6 @@ interface ModelAnswer {
 
 type ModelAnswers = Record<string, ModelAnswer>;
 
-interface DecisionsResponse {
-	answers?: ModelAnswers;
-}
-
 function isProbability(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
@@ -104,18 +101,9 @@ export function createDecisionsBackend(options: DecisionsBackendOptions): Decisi
 		name: `decisions:${options.model}`,
 		async decide(input) {
 			try {
-				const response = await doFetch(options.url, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						model: options.model,
-						input: buildDecisionsInput(input),
-						questions: [ACTION_QUESTION],
-					}),
-					signal: AbortSignal.timeout(options.timeoutMs),
+				const body = await requestDecisions({
+					...options, fetch: doFetch, input: buildDecisionsInput(input), questions: [ACTION_QUESTION],
 				});
-				if (!response.ok) return { error: `decision API ${response.status}` };
-				const body = (await response.json()) as DecisionsResponse;
 				const answer = body.answers?.action;
 				if (!answer?.probabilities || !answer.choice) return { error: "decision API missing probabilities" };
 				return choiceVerdict({ approve: answer.probabilities.A ?? 0, ask: answer.probabilities.B ?? 0, deny: answer.probabilities.C ?? 0 }, options.threshold ?? 0.85, answer.choice);

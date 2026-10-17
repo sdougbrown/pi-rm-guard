@@ -171,6 +171,7 @@ async function runDecisions() {
 		url: process.env.RM_GUARD_URL ?? "http://localhost:4000/v1/decisions",
 		model: process.env.RM_GUARD_MODEL ?? "gemma4",
 		timeoutMs: 5000,
+		apiKey: process.env.RM_GUARD_API_KEY,
 	});
 	return runCases("decisions", backend);
 }

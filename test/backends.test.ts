@@ -101,7 +101,9 @@ test("decisions backend maps HTTP failures and bad bodies to errors", async () =
 		timeoutMs: 1000,
 		fetch: async () => new Response("boom", { status: 500 }),
 	});
-	assert.deepEqual(await failing.decide(input()), { error: "decision API 500" });
+	const failed = await failing.decide(input());
+	assert.ok("error" in failed);
+	assert.match(failed.error, /\b500\b/);
 
 	const malformed = createDecisionsBackend({
 		url: "http://test/v1/decisions",
