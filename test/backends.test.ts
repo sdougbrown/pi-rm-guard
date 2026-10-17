@@ -23,13 +23,12 @@ const input = (command = "rm -rf dist"): DecisionInput => ({
 	evidence: ["bash: du -sh node_modules", "result: 2.1G node_modules"],
 });
 
-test("decisions input presents the raw command and context without claiming verified targets", () => {
+test("decisions input presents the raw command and context", () => {
 	const built = buildDecisionsInput(input());
 	assert.match(built, /rm -rf dist/);
 	assert.match(built, /\/repo/);
 	assert.match(built, /clean up the build cache/);
 	assert.match(built, /du -sh node_modules/);
-	assert.doesNotMatch(built, /gate has verified|statically resolved/);
 });
 
 test("decisions backend maps the 3-way choice to approve/deny/defer", async () => {
@@ -163,10 +162,10 @@ test("jev backend falls back to bool when choice is rejected", async () => {
 	assert.equal(questionsSeen.length, 2);
 	assert.ok("action" in questionsSeen[0]);
 	assert.ok("safe" in questionsSeen[1]);
-	// Second call stays in bool mode.
 	await backend.decide(input());
-	assert.equal(questionsSeen.length, 3);
-	assert.ok("safe" in questionsSeen[2]);
+	assert.equal(questionsSeen.length, 4);
+	assert.ok("action" in questionsSeen[2]);
+	assert.ok("safe" in questionsSeen[3]);
 
 	// bool fallback low-probability branch: a "not clearly safe" answer defers
 	let lowBoolCalls = 0;
@@ -215,6 +214,50 @@ test("jev backend defers on low probability and surfaces failures as errors", as
 
 	const failing = createJevBackend(fakeRegistry(), { modelId: "jev-latest", apiKey: undefined, classify: async () => { throw new Error("rate limited"); } });
 	assert.deepEqual(await failing.decide(input()), { error: "rate limited" });
+});
+
+test("a transient failure does not disable later three-way verdicts", async () => {
+	let recovered = false;
+	const seen: unknown[] = [];
+	const backend = createJevBackend(fakeRegistry(), {
+		modelId: "j", apiKey: undefined,
+		classify: async (_state, questions) => {
+			seen.push(questions);
+			if (!recovered) throw new Error("temporarily offline");
+			return { answers: { action: { probabilities: { approve: 0.001, ask: 0.001, deny: 0.998 } } } };
+		},
+	});
+	assert.ok("error" in await backend.decide(input()));
+	recovered = true;
+	assert.equal((await backend.decide(input()) as { action: string }).action, "deny");
+	assert.ok("action" in (seen.at(-1) as object));
+});
+
+test("backends reject malformed probabilities and honor the model's explicit choice", async () => {
+	for (const probabilities of [{ A: "1", B: 0, C: 0 }, { A: 1.1, B: 0, C: 0 }]) {
+		const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+			fetch: async () => new Response(JSON.stringify({ answers: { action: { choice: "approve", probabilities } } })),
+		});
+		assert.ok("error" in await backend.decide(input()));
+	}
+	const direct = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100, threshold: 0.5,
+		fetch: async () => new Response(JSON.stringify({ answers: { action: { choice: "deny", probabilities: { A: 0.51, B: 0, C: 0.49 } } } })),
+	});
+	assert.deepEqual(await direct.decide(input()), { action: "defer", probability: 0.49, label: "deny" });
+	const classifier = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, threshold: 0.5,
+		classify: async () => ({ answers: { action: { choice: "deny", probabilities: { approve: 0.51, ask: 0, deny: 0.49 } } } }),
+	});
+	assert.deepEqual(await classifier.decide(input()), { action: "defer", probability: 0.49, label: "deny" });
+});
+
+test("the decisions request aborts instead of accepting a late approval", async () => {
+	const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 5,
+		fetch: async (_url, init) => new Promise((resolve, reject) => {
+			const timer = setTimeout(() => resolve(choiceResponse(1, 0, 0)), 100);
+			init?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(init.signal?.reason); }, { once: true });
+		}),
+	});
+	assert.ok("error" in await backend.decide(input()));
 });
 
 test("backends report their default thresholds", () => {

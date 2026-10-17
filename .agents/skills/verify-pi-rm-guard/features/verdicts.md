@@ -11,6 +11,7 @@ fixture deletion. Only the model response changes the outcome.
 | `defer` | Ask, p=0.94 | Marker preserved; `gate=model-ask` |
 | `low-conf` | Approve below threshold, p=0.5 | Marker preserved; `gate=model-ask` |
 | `model-error` | Invalid stub JSON produces HTTP 500 | Marker preserved; `gate=model-error` |
+| `malformed-model` | Approval probability is a string, not a number | Marker preserved; `gate=model-error` |
 
 Every case requires one decision request. No path determines a verdict.
 A model error or request for confirmation asks the user when a UI exists;

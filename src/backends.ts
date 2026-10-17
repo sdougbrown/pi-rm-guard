@@ -62,8 +62,37 @@ export const ACTION_QUESTION = {
 /** Model-driven denial needs near-certainty: a false deny blocks without human review. */
 export const DENY_THRESHOLD = 0.99;
 
+interface ModelAnswer {
+	probabilities?: Record<string, number>;
+	probability?: number;
+	choice?: string;
+}
+
+type ModelAnswers = Record<string, ModelAnswer>;
+
 interface DecisionsResponse {
-	answers?: Record<string, { probabilities?: Record<string, number>; choice?: string }>;
+	answers?: ModelAnswers;
+}
+
+function isProbability(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function choiceVerdict(probabilities: Record<"approve" | "ask" | "deny", number>, threshold: number, choice?: string): DecisionOutcome | { error: string } {
+	if (!Object.values(probabilities).every(isProbability)) return { error: "model returned invalid choice probabilities" };
+	if (!isProbability(threshold)) return { error: "invalid approval threshold" };
+	const { approve, ask, deny } = probabilities;
+	const labels = ["approve", "ask", "deny"] as const;
+	let label: typeof labels[number] = approve > ask && approve > deny ? "approve" : deny > ask && deny > approve ? "deny" : "ask";
+	if (choice !== undefined) {
+		const index = labels.findIndex((name, i) => choice === name || choice === String.fromCharCode(65 + i) || choice === ACTION_QUESTION.options[i].name);
+		if (index < 0) return { error: "model returned an unknown choice" };
+		label = labels[index];
+	}
+	const probability = probabilities[label];
+	if (label === "approve" && probability >= threshold) return { action: "approve", probability, label };
+	if (label === "deny" && probability >= DENY_THRESHOLD) return { action: "deny", probability, label };
+	return { action: "defer", probability, label };
 }
 
 export function createDecisionsBackend(options: DecisionsBackendOptions): DecisionBackend {
@@ -87,13 +116,7 @@ export function createDecisionsBackend(options: DecisionsBackendOptions): Decisi
 				const body = (await response.json()) as DecisionsResponse;
 				const answer = body.answers?.action;
 				if (!answer?.probabilities || !answer.choice) return { error: "decision API missing probabilities" };
-				const approve = answer.probabilities.A ?? 0;
-				const ask = answer.probabilities.B ?? 0;
-				const deny = answer.probabilities.C ?? 0;
-				const label = approve >= ask && approve >= deny ? "approve" : deny >= ask ? "deny" : "ask";
-				if (label === "approve" && approve >= (options.threshold ?? 0.85)) return { action: "approve", probability: approve, label };
-				if (label === "deny" && deny >= DENY_THRESHOLD) return { action: "deny", probability: deny, label };
-				return { action: "defer", probability: Math.max(approve, ask, deny), label };
+				return choiceVerdict({ approve: answer.probabilities.A ?? 0, ask: answer.probabilities.B ?? 0, deny: answer.probabilities.C ?? 0 }, options.threshold ?? 0.85, answer.choice);
 			} catch (err) {
 				return { error: err instanceof Error ? err.message : String(err) };
 			}
@@ -116,7 +139,7 @@ export interface ClassifierBackendOptions {
 	classify?: (
 		state: Record<string, unknown>,
 		questions?: unknown,
-	) => Promise<{ answers?: Record<string, { probabilities?: Record<string, number>; probability?: number }> } | Record<string, { probabilities?: Record<string, number>; probability?: number }>>;
+	) => Promise<{ answers?: ModelAnswers } | ModelAnswers>;
 }
 
 const CLASSIFIER_CRITERIA = {
@@ -130,23 +153,21 @@ const BOOL_CRITERIA_TRUE =
 const BOOL_CRITERIA_FALSE =
 	"Effects are unclear from the evidence or deletion may lose valuable user or project data";
 
-function unwrapAnswers(raw: { answers?: unknown } | Record<string, unknown>): Record<string, { probabilities?: Record<string, number>; probability?: number }> {
+function unwrapAnswers(raw: { answers?: unknown } | Record<string, unknown>): ModelAnswers {
 	if (raw && typeof raw === "object" && "answers" in raw && raw.answers && typeof raw.answers === "object") {
-		return raw.answers as Record<string, { probabilities?: Record<string, number>; probability?: number }>;
+		return raw.answers as ModelAnswers;
 	}
-	return raw as Record<string, { probabilities?: Record<string, number>; probability?: number }>;
+	return raw as ModelAnswers;
 }
 
 export function createClassifierBackend(
-	modelRegistry: { findOfType(type: string, provider: string, id: string): unknown; classify(model: unknown, ctx: unknown, opts?: unknown): Promise<{ answers: Record<string, { probabilities?: Record<string, number>; probability?: number }>; stopReason: string; errorMessage?: string }> },
+	modelRegistry: { findOfType(type: string, provider: string, id: string): unknown; classify(model: unknown, ctx: unknown, opts?: unknown): Promise<{ answers: ModelAnswers; stopReason: string; errorMessage?: string }> },
 	options: ClassifierBackendOptions,
 ): DecisionBackend {
-	// Choice first (approve/deny/defer); bool-only models fall back after an error.
-	let mode: "choice" | "bool" = "choice";
 	const timeoutMs = options.timeoutMs ?? 10_000;
 	const timeoutError = new Error(`classifier timed out after ${timeoutMs}ms`);
 
-	function questionsFor() {
+	function questionsFor(mode: "choice" | "bool") {
 		return mode === "choice"
 			? { action: { type: "choice" as const, instructions: "What should happen with this command?", criteria: CLASSIFIER_CRITERIA } }
 			: {
@@ -158,10 +179,10 @@ export function createClassifierBackend(
 				};
 	}
 
-	async function classifyVia(state: Record<string, unknown>): Promise<Record<string, { probabilities?: Record<string, number>; probability?: number }>> {
+	async function classifyVia(state: Record<string, unknown>, questions: unknown): Promise<ModelAnswers> {
 		const model = modelRegistry.findOfType("classifier", options.provider, options.modelId);
 		if (!model) throw new Error(`classifier model ${options.provider}/${options.modelId} not in catalog`);
-		const result = await modelRegistry.classify(model, { state, questions: questionsFor() }, options.apiKey ? { apiKey: options.apiKey } : undefined);
+		const result = await modelRegistry.classify(model, { state, questions }, options.apiKey ? { apiKey: options.apiKey } : undefined);
 		if (!result.answers || Object.keys(result.answers).length === 0) {
 			throw new Error(result.errorMessage ?? "classifier returned no answer");
 		}
@@ -194,28 +215,25 @@ export function createClassifierBackend(
 				evidence,
 			};
 			const threshold = options.threshold ?? 0.6;
+			let mode: "choice" | "bool" = "choice";
 			try {
-				let answers: Record<string, { probabilities?: Record<string, number>; probability?: number }>;
+				let answers: ModelAnswers;
 				try {
-					answers = unwrapAnswers(await classifyBounded(state, questionsFor()));
+					answers = unwrapAnswers(await classifyBounded(state, questionsFor(mode)));
 				} catch (err) {
-					if (mode === "bool" || err === timeoutError) return { error: err instanceof Error ? err.message : String(err) };
-					// The provider rejected the choice question — retry as bool.
+					if (err === timeoutError) return { error: timeoutError.message };
+					// A failed request does not establish a permanent model capability.
 					mode = "bool";
-					answers = unwrapAnswers(await classifyBounded(state, questionsFor()));
+					answers = unwrapAnswers(await classifyBounded(state, questionsFor(mode)));
 				}
 				if (mode === "choice") {
 					const a = answers.action;
 					if (!a?.probabilities) return { error: "classifier missing choice probabilities" };
-					const approve = a.probabilities.approve ?? 0;
-					const ask = a.probabilities.ask ?? 0;
-					const deny = a.probabilities.deny ?? 0;
-					const label = approve >= ask && approve >= deny ? "approve" : deny >= ask ? "deny" : "ask";
-					if (label === "approve" && approve >= threshold) return { action: "approve", probability: approve, label };
-					if (label === "deny" && deny >= DENY_THRESHOLD) return { action: "deny", probability: deny, label };
-					return { action: "defer", probability: Math.max(approve, ask, deny), label };
+					return choiceVerdict({ approve: a.probabilities.approve ?? 0, ask: a.probabilities.ask ?? 0, deny: a.probabilities.deny ?? 0 }, threshold, a.choice);
 				}
-				const probability = answers.safe?.probability ?? 0;
+				const probability = answers.safe?.probability;
+				if (!isProbability(probability)) return { error: "model returned an invalid boolean probability" };
+				if (!isProbability(threshold)) return { error: "invalid approval threshold" };
 				// Bool classifiers have no deny label: a "no" defers to the human.
 				return probability >= threshold ? { action: "approve", probability, label: "approve" } : { action: "defer", probability, label: "ask" };
 			} catch (err) {

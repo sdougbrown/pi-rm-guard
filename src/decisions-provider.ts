@@ -61,7 +61,10 @@ export function toPiAnswer(q: PiQuestion, a: WireAnswer): Record<string, unknown
 		for (const [index, name] of names.entries()) {
 			probabilities[name] = a.probabilities?.[LETTERS[index]] ?? 0;
 		}
-		return { type: "choice", choice: a.choice ?? names[0], probabilities, confidence: probabilities[a.choice ?? names[0]] ?? 0 };
+		if (!a.choice) throw new Error("decisions API missing choice");
+		const choice = names.includes(a.choice) ? a.choice : names[LETTERS.indexOf(a.choice)];
+		if (!choice) throw new Error("decisions API returned an unknown choice");
+		return { type: "choice", choice, probabilities, confidence: probabilities[choice] };
 	}
 	return { type: "score", score: a.score ?? 0, confidence: a.probabilities ? Math.max(...Object.values(a.probabilities)) : 0 };
 }

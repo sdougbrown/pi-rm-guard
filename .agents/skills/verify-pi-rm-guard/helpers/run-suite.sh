@@ -23,4 +23,5 @@ RM_GUARD_VERIFY_SETUP_COMMAND="printf 'generated-fixture-%s: disposable build ar
 "$H/run-case.sh" defer 'rm -rf "@VICTIM@"' "$B"
 "$H/run-case.sh" low-conf 'rm -rf "@VICTIM@"' '{"action":"A","probabilities":{"A":0.5,"B":0.49,"C":0.01}}'
 "$H/run-case.sh" model-error 'rm -rf "@VICTIM@"' 'invalid-json'
+"$H/run-case.sh" malformed-model 'rm -rf "@VICTIM@"' '{"action":"A","probabilities":{"A":"1","B":0,"C":0}}'
 "$H/run-case.sh" absent 'find "@VICTIM@" -name marker -delete' "$A"

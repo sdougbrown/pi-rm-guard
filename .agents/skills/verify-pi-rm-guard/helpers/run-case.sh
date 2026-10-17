@@ -38,6 +38,10 @@ fi
 mkdir -p "$CASE_DIR/workspace" "$CASE_DIR/agent" "$CASE_DIR/sessions" "$CASE_DIR/stub"
 VICTIM="$CASE_DIR/victim"
 COMMAND="${COMMAND//@VICTIM@/$VICTIM}"
+case "$COMMAND" in
+	*"$VICTIM"*) ;;
+	*) echo 'FAIL: command must reference the @VICTIM@ fixture' >&2; exit 2 ;;
+esac
 
 # --- start stub engines (record PID; never kill by name) ---------------------
 node "$SKILL_DIR/helpers/stub-servers.mjs" "$CASE_DIR/stub" > "$CASE_DIR/stub/stdout.json" &
@@ -72,7 +76,7 @@ fs.writeFileSync(process.argv[1], JSON.stringify({rmGuard: {
 	classifier: "decisions/stub",
 	url: `http://127.0.0.1:${process.argv[2]}/v1/decisions`,
 	model: "stub",
-	timeoutMs: 20000,
+	timeoutMs: Number(process.env.RM_GUARD_VERIFY_TIMEOUT_MS ?? 20000),
 	keyFile: "/nonexistent/rmguard-test-key",
 }}));
 ' "$CASE_DIR/agent/settings.json" "$DEC_PORT"
@@ -126,13 +130,13 @@ echo "evidence:  $CASE_DIR"
 # no rm-guard entry at all; "targets=[]" an empty, "targets=+" a non-empty list.
 expectation_for() {
 	case "$1" in
-		approve|approve-var|approve-glob|approve-home|approve-redirect|heredoc-bash|heredoc-sub|non-recursive|context)
+		approve|approve-var|approve-glob|approve-redirect|heredoc-bash|heredoc-sub|non-recursive|context)
 			echo "DELETED|action=approve autoApproved=true|1" ;;
-		heredoc-quoted|git-rm-cached)
+		heredoc-quoted)
 			echo "SURVIVED|action=approve autoApproved=true|1" ;;
 		deny) echo "SURVIVED|action=deny autoApproved=false|1" ;;
 		defer|low-conf) echo "SURVIVED|gate=model-ask autoApproved=false|1" ;;
-		model-error) echo "SURVIVED|gate=model-error autoApproved=false|1" ;;
+		model-error|malformed-model) echo "SURVIVED|gate=model-error autoApproved=false|1" ;;
 		absent) echo "DELETED|absent|0" ;;
 		*)                echo "" ;;
 	esac

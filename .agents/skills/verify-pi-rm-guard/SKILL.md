@@ -42,6 +42,8 @@ Run from the repository root with Node >=24 and the `pi` CLI on PATH.
    ```
    Substitute another reachable endpoint/model when needed; set
    `RM_GUARD_VERIFY_LIVE_MODEL` to override `gemma4`. Record which weights ran.
+   Set `RM_GUARD_VERIFY_TIMEOUT_MS=1500` to exercise the production default deadline;
+   the harness otherwise allows 20 seconds to isolate verdict handling.
 
 Stubbed decisions prove the plumbing, **not model judgment**. Live evals assess
 sample judgments, not universal safety. Report unavailable live weights as a
@@ -60,7 +62,8 @@ Pi runs in print mode, where escalation blocks because there is no confirmation 
 Interactive confirmation is covered by the hook unit tests.
 
 `@VICTIM@` expands to a unique disposable directory containing `marker`, outside
-the session workspace. Only use fixture paths in executable deletion recipes.
+the session workspace. Commands must reference this fixture; the harness rejects
+ones that omit it before starting pi. Only use fixture paths in deletion recipes.
 The harness checks pi's exit status, marker state, session entries, and the number
 of decision requests. Unmapped cases are exploratory and do not count as proofs.
 

@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { createServer } from "node:http";
 import { createRmGuard, type RmGuardConfig } from "../src/index.ts";
 import type { DecisionInput } from "../src/backends.ts";
 
@@ -30,6 +31,8 @@ interface HarnessOptions {
 	delayMs?: number;
 	timeoutMs?: number;
 	classifier?: string;
+	backend?: "classifier" | "decisions";
+	decisionsUrl?: string;
 }
 
 function harness(options: HarnessOptions) {
@@ -72,10 +75,10 @@ function harness(options: HarnessOptions) {
 		modelRegistry: registry,
 	};
 	const config: RmGuardConfig = {
-		backend: "classifier",
+		backend: options.backend ?? "classifier",
 		classifier: options.classifier ?? "typesafe/jev-latest",
 		classifierApiKey: undefined,
-		decisionsUrl: "http://unused/v1/decisions",
+		decisionsUrl: options.decisionsUrl ?? "http://unused/v1/decisions",
 		decisionsModel: "m",
 		timeoutMs: options.timeoutMs ?? 1000,
 		threshold: options.threshold,
@@ -132,6 +135,8 @@ test("model approve passes the command through", async () => {
 	const h = harness({ command: "rm -rf node_modules", probabilities: { approve: 0.95, ask: 0.03, deny: 0.02 } });
 	assert.equal(await h.decide(), undefined);
 	assert.equal(h.confirmCount, 0);
+	assert.equal((h.appended[0] as { action: string }).action, "approve");
+	assert.equal((h.appended[0] as { autoApproved: boolean }).autoApproved, true);
 });
 
 test("confident model deny blocks the command", async () => {
@@ -139,6 +144,8 @@ test("confident model deny blocks the command", async () => {
 	const result = (await h.decide()) as { block: boolean; reason: string };
 	assert.equal(result.block, true);
 	assert.equal(h.confirmCount, 0);
+	assert.equal((h.appended[0] as { action: string }).action, "deny");
+	assert.equal((h.appended[0] as { autoApproved: boolean }).autoApproved, false);
 });
 
 test("model ask defers to confirm UI; user decision controls the result", async () => {
@@ -150,6 +157,8 @@ test("model ask defers to confirm UI; user decision controls the result", async 
 	const result = (await rejected.decide()) as { block: boolean };
 	assert.equal(result.block, true);
 	assert.equal(rejected.confirmCount, 1);
+	assert.equal((rejected.appended.at(-1) as { gate: string }).gate, "model-ask");
+	assert.equal((rejected.appended.at(-1) as { autoApproved: boolean }).autoApproved, false);
 });
 
 test("below-threshold approve defers to the human (RM_GUARD_THRESHOLD honored)", async () => {
@@ -169,6 +178,8 @@ test("model error defers to confirm UI, blocks when no UI", async () => {
 	const result = (await noUI.decide()) as { block: boolean; reason: string };
 	assert.equal(result.block, true);
 	assert.match(result.reason, /rate limited/);
+	assert.equal((noUI.appended.at(-1) as { gate: string }).gate, "model-error");
+	assert.equal((noUI.appended.at(-1) as { autoApproved: boolean }).autoApproved, false);
 });
 
 test("model ask blocks when no UI is available", async () => {
@@ -205,6 +216,40 @@ test("tool calls keep their order in the model evidence", async () => {
 	const evidence = h.stateCaptures[0].evidence as string[];
 	assert.match(evidence[0], /git status/);
 	assert.match(evidence[1], /du -sh dist/);
+});
+
+test("the decisions route honors configured thresholds and request timeouts", async (t) => {
+	let delayed = false;
+	const server = createServer((_request, response) => {
+		const send = () => response.end(JSON.stringify({ answers: { action: { choice: "approve", probabilities: { A: 0.9, B: 0.08, C: 0.02 } } } }));
+		if (delayed) setTimeout(send, 40); else send();
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	t.after(() => server.close());
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const options = { command: "rm -rf dist", backend: "decisions" as const, decisionsUrl: `http://127.0.0.1:${address.port}/v1/decisions`, hasUI: false };
+	const threshold = harness({ ...options, threshold: 0.95 });
+	assert.equal((await threshold.decide() as { block: boolean }).block, true);
+	assert.equal((threshold.appended[0] as { backend: string }).backend, "decisions:m");
+	delayed = true;
+	const timeout = harness({ ...options, timeoutMs: 5 });
+	assert.equal((await timeout.decide() as { block: boolean }).block, true);
+	assert.match((timeout.appended.at(-1) as { reason: string }).reason, /timeout|timed out/i);
+});
+
+test("old history is omitted while recent evidence and the current request remain", async () => {
+	const branch = [branchEntry({ role: "user", content: "old-user-secret" }), branchEntry({ role: "toolResult", content: "old-tool-secret" })];
+	for (let i = 0; i < 50; i++) {
+		branch.push(branchEntry({ role: "user", content: `recent user ${i}` }));
+		branch.push(branchEntry({ role: "toolResult", content: `recent tool ${i}` }));
+	}
+	const h = harness({ command: "rm -rf dist", branch });
+	await h.decide();
+	const state = JSON.stringify(h.stateCaptures[0]);
+	assert.doesNotMatch(state, /old-user-secret|old-tool-secret/);
+	assert.match(state, /recent tool 49/);
+	assert.match(state, /clean the build cache/);
 });
 
 test("non-bash tool calls pass untouched", async () => {

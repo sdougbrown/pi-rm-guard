@@ -34,6 +34,18 @@ test("yes_no answers map back to bool probability", () => {
 	assert.deepEqual(answer, { type: "bool", probability: 0.93 });
 });
 
+test("letter choices identify the selected label and its confidence", () => {
+	assert.deepEqual(toPiAnswer({ type: "choice", instructions: "", criteria: { build: "b", system: "s" } }, {
+		type: "choice", probabilities: { A: 0.1, B: 0.9 }, choice: "B",
+	}), { type: "choice", choice: "system", probabilities: { build: 0.1, system: 0.9 }, confidence: 0.9 });
+});
+
+test("missing choices are not fabricated from the first option", () => {
+	assert.throws(() => toPiAnswer({ type: "choice", instructions: "", criteria: { build: "b", system: "s" } }, {
+		type: "choice", probabilities: { A: 0.1, B: 0.9 },
+	}), /missing choice/);
+});
+
 test("letter-keyed choice probabilities map back to names", () => {
 	const answer = toPiAnswer({ type: "choice", instructions: "", criteria: { build: "b", system: "s" } }, {
 		type: "choice",

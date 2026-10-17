@@ -19,4 +19,11 @@ Inspect live requests and `stub/decisions-responses.jsonl` together with session
 entries and marker state. Record endpoint/model and failures; do not describe
 stubbed verdicts as evidence that a real model makes useful judgments.
 
+Invalid probability values escalate as model errors. The model's explicit choice
+controls the verdict when provided; confidence determines whether to escalate it.
+Registered providers normalize letter choices to names and preserve confidence;
+a missing choice is an API error, not a fabricated first-option verdict.
+Classifier fallback applies only to the current request. A transient failure does
+not disable later three-way judgments; backend unit tests exercise recovery.
+
 See [verdicts.md](verdicts.md) for response handling.
