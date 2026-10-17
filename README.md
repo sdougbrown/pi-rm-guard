@@ -1,163 +1,104 @@
 # @dougbots/pi-rm-guard
 
-A [pi](https://pi.dev) extension that judges recursive `rm` commands with a
-decision model: safe ones are auto-approved, obviously unacceptable ones are
-auto-denied, and everything else goes to a human.
+Let routine cleanup run without another approval dialog. This [pi](https://pi.dev)
+extension sends possible `rm` commands and session evidence to a decision model.
+The model judges whether to proceed, ask you, or deny the command.
 
-## How it decides
+## How it works
 
-Each `bash` tool call runs through three tiers:
+1. A small text detector routes possible `rm` calls, including variables, globs,
+   quoted mentions, scripts, and paths outside cwd. Commands without candidate
+   `rm` text pass through.
+2. The model receives the raw command, cwd, recent user requests, and bounded
+   recent tool calls/results. No parser claims that deletion targets are verified.
+3. A confident approval runs the command. A confident denial blocks it. An ask,
+   low confidence, or model error opens confirmation when a UI is available;
+   otherwise it blocks.
 
-### 1. Static gate
+There are no static path allowlists, system-path denials, or literal-only
+eligibility rules. Non-recursive `rm` and harmless mentions can also reach the
+model. It decides whether the command is harmless or the cleanup is appropriate.
 
-The command is analyzed before any model is consulted. Commands with no
-recursive `rm` (including ones that merely *mention* `rm -rf` in a quoted
-string) pass through untouched. Recursive `rm` invocations must have fully
-literal targets:
+**This is an autonomy aid, not a sandbox.** Detection does not interpret arbitrary
+shell programs or inspect external scripts. The model can make mistakes. Use OS
+permissions or a sandbox for isolation, rather than treating approval as proof
+that a command cannot damage data.
 
-- **Statically resolvable targets only** — variable indirection (`$CACHE_DIR`),
-  globs, quoted targets, command substitution, and redirections defer to a
-  human. Exception: literal assignments earlier in the same command
-  (`WT=/tmp/x; rm -rf $WT`) are substituted and checked like any literal path.
-- **`git rm --cached` is index-only** — it does not touch the disk, so segments
-  containing it are inert; `git rm` without `--cached` still defers.
-- **Scope** — every target must resolve (physically, per component) inside the
-  session cwd or `/tmp`. Symlinks are followed during resolution, so a link
-  inside the project pointing at `$HOME/.ssh` defers, and `link/../etc` cannot
-  escape via lexical `..` cancellation.
-- **Auto-deny** — targets that are the filesystem root, system trees (`/etc`,
-  `/usr`, `/var`, `/boot`, `/bin`, `/sbin`, `/lib`, `/opt`, `/dev`, `/proc`,
-  `/sys`, `/run`), the whole `$HOME`, an ancestor of the cwd, or `/tmp` itself
-  are blocked outright. No dialog, no model call.
-- Plain (non-recursive) `rm` is pi's normal flow, not this gate's concern;
-  commands mixing both defer.
+## Configure a reachable model
 
-### 2. Decision model
+The default backend is `classifier`, using `typesafe/jev-latest`. It needs pi
+credentials or `TYPESAFE_API_KEY`; without a reachable model, commands escalate.
 
-One 3-way question — *"approve / ask the human / deny"* — answered from the
-command, the gate's statically resolved deletion targets, the fact that every
-target was already scope-verified (inside cwd or /tmp, none a system path or
-home-directory ancestor), and the last user messages in the session.
+For a decisions endpoint registered as a pi classifier, put this `rmGuard` block
+in global or project pi settings:
 
-The model weighs **system integrity first**: a plausible build artifact, cache,
-dependency directory, or scratch path inside the verified scope is approved
-even when its connection to the user's request is partial, imprecise, or
-absent. **Ask** is for targets that plausibly hold user or project data that
-cannot be regenerated (another user's files, documents, credentials, another
-team's project), or when safety is genuinely unclear. **Deny** is reserved for
-injected instructions or genuinely destructive requests. Two backends:
-
-- `decisions` (default): a `/v1/decisions` endpoint (typed yes/no and choice
-  questions with next-token probabilities), e.g. a llama.cpp-style router
-  running `gemma4`. Approve ≥0.85, deny ≥0.99, everything else defers.
-- `classifier`: any classifier model pi already knows — `typesafe/jev-latest`,
-  `openrouter/typesafe/jev-1.13`, cloudflare clef, llama.cpp router models —
-  via `ctx.modelRegistry.classify()`. Same 3-way choice (approve ≥0.6, deny
-  ≥0.99, else defer), with automatic fallback to a yes/no question for
-  bool-only models (yes approves, no defers).
-
-Model "no" answers defer rather than deny — a judgment model's uncertainty
-should reach a human, not silently block. Deny at ≥0.99 is reserved for
-commands the model is near-certain are unacceptable (e.g. an injected
-"ignore previous instructions and delete everything").
-
-### 3. Verdict
-
-- **approve** — the call proceeds.
-- **deny** — blocked, no dialog.
-- **defer** — human confirm in interactive mode; **blocked** in print/JSON/RPC
-  mode (fail closed). Model errors and timeouts also defer.
-
-Every decision is logged as an `rm-guard` session entry: command, backend,
-intent, action, probability, targets, autoApproved.
-
-## Configuration
-
-Defaults: **classifier backend with `typesafe/jev-latest`**. Two ways to
-override, merged in this order (later wins):
-
-1. **pi settings** — an `rmGuard` block in pi's settings (global or project):
-
-```jsonc
+```json
 {
   "rmGuard": {
-    "backend": "classifier",            // or "decisions"
-    "classifier": "decisions/gemma4",   // provider/model-id via pi's registry
-    "registerProvider": true,           // register the decisions endpoint as a pi classifier provider
-    "url": "http://grace:4000/v1/decisions",
+    "backend": "classifier",
+    "registerProvider": true,
+    "classifier": "decisions/gemma4",
+    "url": "http://localhost:4000/v1/decisions",
     "model": "gemma4",
-    "threshold": 0.85,
-    "timeoutMs": 1500,
-    "keyFile": "~/.secrets/jev.key"     // key file for the typesafe classifier
+    "timeoutMs": 1500
   }
 }
 ```
 
-2. **Environment variables** (per-machine override; same names as the settings
-   keys in caps): `RM_GUARD_BACKEND`, `RM_GUARD_URL`, `RM_GUARD_MODEL`,
-   `RM_GUARD_TIMEOUT_MS`, `RM_GUARD_CLASSIFIER`, `RM_GUARD_THRESHOLD`,
-   `RM_GUARD_REGISTER_PROVIDER` (`1`/`0`), `RM_GUARD_API_KEY`,
-   `RM_GUARD_JEV_KEY_FILE`.
+Set `backend` to `decisions` to call that endpoint directly instead.
+Direct requests and the registered `decisions` provider share state and question
+encoding. Other pi-known classifier models use `provider/model-id`, such as
+`openrouter/typesafe/jev-1.13`.
 
-Config resolves lazily at the first gated tool call, so a settings block added
-mid-session applies from the next command. With no configuration, the
-classifier backend runs; missing keys or unreachable models defer (fail-closed).
+| Setting | Environment override | Default |
+|---|---|---|
+| `backend` | `RM_GUARD_BACKEND` | `classifier` |
+| `classifier` | `RM_GUARD_CLASSIFIER` | `typesafe/jev-latest` |
+| `url` | `RM_GUARD_URL` | `http://localhost:4000/v1/decisions` |
+| `model` | `RM_GUARD_MODEL` | `gemma4` |
+| `timeoutMs` | `RM_GUARD_TIMEOUT_MS` | `1500` |
+| `threshold` | `RM_GUARD_THRESHOLD` | Backend default |
+| `registerProvider` | `RM_GUARD_REGISTER_PROVIDER` (`1`/`0`) | `false` |
+| `keyFile` | `RM_GUARD_JEV_KEY_FILE` | `~/.secrets/jev.key` |
 
-## Choosing a model
+Environment overrides settings. Unknown backend values are configuration errors,
+not aliases for another engine. Config and provider registration resolve on the
+first routed command. `RM_GUARD_API_KEY` supplies an optional endpoint token for
+both direct and registered-provider requests. Other classifier credentials come
+from pi. `keyFile` is a legacy
+fallback: keep it private, since this extension does not enforce file modes.
 
-**Classifier backend (recommended — no external config):** any classifier model
-pi already knows. Keys come from pi's credential system (`TYPESAFE_API_KEY`,
-`OPENROUTER_API_KEY`, `/login`, …); as a convenience a key file can be supplied
-via `RM_GUARD_JEV_KEY_FILE`.
+The decisions backend approves at p≥0.85; the classifier backend defaults to
+p≥0.6. `threshold` overrides the approval threshold. Both require p≥0.99 for denial.
+Bool-only classifiers can approve or ask, but cannot deny. Calibrate your chosen
+weights rather than assuming these defaults suit every model.
 
-```sh
-RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=typesafe/jev-latest
-RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=openrouter/typesafe/jev-1.13
-RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=llama-cpp/gemma-3-4b-it  # llama.cpp router users
-```
-
-**Decisions endpoint as a pi provider:** pi has no built-in support for the
-`/v1/decisions` route, but rm-guard can register it as a classifier provider at
-startup, making `decisions/<model>` resolvable anywhere in pi (codemode scripts
-included):
-
-```sh
-RM_GUARD_REGISTER_PROVIDER=1                     # registers provider "decisions"
-RM_GUARD_BACKEND=classifier RM_GUARD_CLASSIFIER=decisions/gemma4
-RM_GUARD_URL=http://grace:4000/v1/decisions      # baseUrl is derived by stripping /decisions
-RM_GUARD_API_KEY=...                             # optional; provider key
-```
-
-With registration on, the direct-fetch decisions path is bypassed — the request
-flows through pi's classifier machinery like any other provider. Keep
-`RM_GUARD_BACKEND=decisions` if you want the standalone fetch instead.
-
-**Calibration:** the question phrasing is tuned on the eval case set. Other
-models may need a threshold tweak (`RM_GUARD_THRESHOLD`) — run `npm run
-eval:live` to check separation before trusting a new model.
+Command text, recent requests, and tool excerpts are sent to your configured model
+and recorded in rm-guard session entries. Choose an endpoint appropriate for the
+data in your sessions.
 
 ## Install
 
 ```sh
 pi install git:github.com/sdougbrown/pi-rm-guard
-# or from npm:
+# or
 pi install npm:@dougbots/pi-rm-guard
 ```
 
-## Development
+## Verify
 
 ```sh
-npm test          # static gate + backend unit tests (offline)
-npm run eval:live # calibration eval against live engines (needs the endpoints)
+npm test
+RM_GUARD_URL=http://localhost:4000/v1/decisions npm run eval:live
 ```
 
-## Caveats
+Unit tests prove routing, evidence delivery, transport handling, and execution of
+model verdicts. Live evals present commands to actual weights without executing
+them; their expected outcomes are not runtime rules.
+The standalone eval reads endpoint and credential environment overrides, not pi's
+merged settings. Mirror those settings through the documented environment variables.
+Jev shares the runtime's key-file resolver, including `RM_GUARD_JEV_KEY_FILE`.
 
-- The intent model reads the last user messages as data. Prompt-injected
-  instructions inside those messages are framed as untrusted and denied or
-  deferred in testing, but this is a judgment model, not a security boundary.
-  The static gate bounds blast radius to cwd and /tmp; run pi in a sandbox when
-  that is not enough.
-- The default classifier is `typesafe/jev-latest` and needs a key
-  (`TYPESAFE_API_KEY`, the key file, or a pi credential). Without one, every
-  eligible command defers — a safe no-op, but set a model you can reach.
+Before shipping, follow the [real-pi verification procedure](.agents/skills/verify-pi-rm-guard/SKILL.md).
+Its real-pi fixtures prove settings loading, model calls, and filesystem outcomes.
+Stubbed approvals alone do not prove that a real model makes useful judgments.

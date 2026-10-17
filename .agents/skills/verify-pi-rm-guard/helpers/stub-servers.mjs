@@ -54,15 +54,16 @@ const chat = http.createServer((req, res) => {
 	req.on("end", () => {
 		appendFileSync(`${stateDir}/chat-requests.jsonl`, body + "\n");
 		const parsed = JSON.parse(body);
-		const sawToolResult = parsed.messages?.some((m) => m.role === "tool");
+		const directive = readJSON(`${stateDir}/directive.json`, {});
+		const toolResults = parsed.messages?.filter((m) => m.role === "tool").length ?? 0;
 		res.setHeader("content-type", "text/event-stream");
-		if (sawToolResult) {
+		if (toolResults >= (directive.setupCommand ? 2 : 1)) {
 			res.write(sseChunk({ role: "assistant", content: "done" }));
 			res.write(sseChunk({}, "stop"));
 		} else {
-			const directive = readJSON(`${stateDir}/directive.json`, {});
-			res.write(sseChunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: "" } }] }));
-			res.write(sseChunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ command: directive.command }) } }] }));
+			const command = directive.setupCommand && toolResults === 0 ? directive.setupCommand : directive.command;
+			res.write(sseChunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${toolResults + 1}`, type: "function", function: { name: "bash", arguments: "" } }] }));
+			res.write(sseChunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ command }) } }] }));
 			res.write(sseChunk({}, "tool_calls"));
 		}
 		res.write("data: [DONE]\n\n");
@@ -71,10 +72,40 @@ const chat = http.createServer((req, res) => {
 });
 
 const decisions = http.createServer((req, res) => {
+	if (req.method !== "POST" || req.url !== "/v1/decisions") {
+		res.writeHead(404).end();
+		return;
+	}
 	let body = "";
 	req.on("data", (c) => (body += c));
-	req.on("end", () => {
+	req.on("end", async () => {
 		appendFileSync(`${stateDir}/decisions-requests.jsonl`, body + "\n");
+		const expectedKey = process.env.RM_GUARD_VERIFY_API_KEY;
+		if (expectedKey && req.headers.authorization !== `Bearer ${expectedKey}`) {
+			res.writeHead(401).end();
+			return;
+		}
+		if (process.env.RM_GUARD_VERIFY_LIVE_URL && process.argv[3] !== "--selftest") {
+			try {
+				const request = JSON.parse(body);
+				request.model = process.env.RM_GUARD_VERIFY_LIVE_MODEL ?? "gemma4";
+				const response = await fetch(process.env.RM_GUARD_VERIFY_LIVE_URL, {
+					method: "POST",
+					headers: { "content-type": "application/json", ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}) },
+					body: JSON.stringify(request),
+					signal: AbortSignal.timeout(Number(process.env.RM_GUARD_VERIFY_TIMEOUT_MS ?? 20000)),
+				});
+				const text = await response.text();
+				appendFileSync(`${stateDir}/decisions-responses.jsonl`, JSON.stringify({ status: response.status, body: text }) + "\n");
+				res.statusCode = response.status;
+				res.setHeader("content-type", "application/json");
+				res.end(text);
+			} catch (err) {
+				res.statusCode = 502;
+				res.end(JSON.stringify({ error: String(err) }));
+			}
+			return;
+		}
 		const DECISION_FILE = `${stateDir}/decision.json`;
 		let decision;
 		try {
@@ -150,13 +181,16 @@ if (process.argv[3] === "--selftest") {
 		// echoing the known decision.json.
 		const decRes = await fetch(`http://127.0.0.1:${decPort}/v1/decisions`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", ...(process.env.RM_GUARD_VERIFY_API_KEY ? { authorization: `Bearer ${process.env.RM_GUARD_VERIFY_API_KEY}` } : {}) },
 			body: JSON.stringify({ command: directive.command, intent: "selftest" }),
 		});
 		if (!decRes.ok) fail(`decisions endpoint returned HTTP ${decRes.status}`);
 		const answer = (await decRes.json())?.answers?.action;
 		if (!answer || answer.choice !== decision.action || JSON.stringify(answer.probabilities) !== JSON.stringify(decision.probabilities))
 			fail(`decisions response does not echo decision.json: ${JSON.stringify(answer)}`);
+
+		const wrongRoute = await fetch(`http://127.0.0.1:${decPort}/v1/decisions/decisions`, { method: "POST" });
+		if (wrongRoute.status !== 404) fail("an invalid decisions route must not produce a verdict");
 
 		console.log("selftest: OK");
 		process.exit(0);

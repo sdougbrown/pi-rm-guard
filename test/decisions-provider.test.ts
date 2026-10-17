@@ -16,9 +16,11 @@ test("bool questions map to yes_no with criteria in the text", () => {
 });
 
 test("choice questions map options in criteria order", () => {
-	const wire = toWireQuestion("cat", { type: "choice", instructions: "Which?", criteria: { build: "b", system: "s" } });
+	const wire = toWireQuestion("cat", { type: "choice", instructions: "Which?", criteria: { build: "generated files", system: "system files" } });
 	assert.equal(wire.type, "choice");
-	assert.deepEqual(wire.options, [{ name: "build" }, { name: "system" }]);
+	assert.equal(wire.options?.length, 2);
+	assert.match(wire.options?.[0].name ?? "", /build.*generated files/);
+	assert.match(wire.options?.[1].name ?? "", /system.*system files/);
 });
 
 test("score questions map levels", () => {
@@ -32,6 +34,33 @@ test("yes_no answers map back to bool probability", () => {
 		probabilities: { yes: 0.93, no: 0.07 },
 	});
 	assert.deepEqual(answer, { type: "bool", probability: 0.93 });
+});
+
+test("letter choices identify the selected label and its confidence", () => {
+	assert.deepEqual(toPiAnswer({ type: "choice", instructions: "", criteria: { build: "b", system: "s" } }, {
+		type: "choice", probabilities: { A: 0.1, B: 0.9 }, choice: "B",
+	}), { type: "choice", choice: "system", probabilities: { build: 0.1, system: 0.9 }, confidence: 0.9 });
+});
+
+test("descriptive wire choices map back to their named label", () => {
+	const question = { type: "choice" as const, instructions: "Which?", criteria: { build: "generated files", system: "system files" } };
+	const choice = toWireQuestion("cat", question).options?.[1].name;
+	assert.ok(choice);
+	assert.deepEqual(toPiAnswer(question, { type: "choice", probabilities: { A: 0.1, B: 0.9 }, choice }), {
+		type: "choice", choice: "system", probabilities: { build: 0.1, system: 0.9 }, confidence: 0.9,
+	});
+});
+
+test("missing choices are not fabricated from the first option", () => {
+	assert.throws(() => toPiAnswer({ type: "choice", instructions: "", criteria: { build: "b", system: "s" } }, {
+		type: "choice", probabilities: { A: 0.1, B: 0.9 },
+	}), /missing choice/);
+});
+
+test("unknown choices are not fabricated from the first option", () => {
+	assert.throws(() => toPiAnswer({ type: "choice", instructions: "", criteria: { build: "b", system: "s" } }, {
+		type: "choice", probabilities: { A: 0.1, B: 0.9 }, choice: "zzz",
+	}));
 });
 
 test("letter-keyed choice probabilities map back to names", () => {

@@ -3,16 +3,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 /**
  * Registers the llama.cpp-router-style /v1/decisions API as a pi classifier
  * provider, so `findOfType("classifier", "decisions", <model>)` works anywhere
- * in pi (rm-guard, codemode scripts, other extensions) with keys resolved
- * through pi's own credential config.
+ * in pi (rm-guard, codemode scripts, other extensions). Callers can supply
+ * an endpoint token or leave it unauthenticated.
  */
 
 export interface DecisionsProviderOptions {
 	/** Base URL up to /v1, e.g. http://grace:4000/v1 */
 	baseUrl: string;
 	models: string[];
-	/** Resolved by pi from $ENV / !command interpolation before it reaches here. */
+	/** Optional Bearer token for this endpoint. */
 	apiKey?: string;
+	timeoutMs?: number;
 }
 
 interface WireQuestion {
@@ -30,6 +31,28 @@ interface WireAnswer {
 	score?: number;
 }
 
+export async function requestDecisions(options: {
+	url: string;
+	model: string;
+	input: unknown;
+	questions: WireQuestion[];
+	timeoutMs: number;
+	apiKey?: string;
+	fetch?: typeof fetch;
+}): Promise<{ answers?: Record<string, WireAnswer> }> {
+	const response = await (options.fetch ?? globalThis.fetch)(options.url, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
+		},
+		body: JSON.stringify({ model: options.model, input: options.input, questions: options.questions }),
+		signal: AbortSignal.timeout(options.timeoutMs),
+	});
+	if (!response.ok) throw new Error(`decisions API ${response.status}`);
+	return await response.json() as { answers?: Record<string, WireAnswer> };
+}
+
 type PiQuestion =
 	| { type: "choice"; instructions: string; criteria: Record<string, string> }
 	| { type: "score"; instructions: string; criteria: string[] }
@@ -45,15 +68,26 @@ export function toWireQuestion(id: string, q: PiQuestion): WireQuestion {
 		return { id, type: "yes_no", question: parts.length > 0 ? `${question}\n${parts.join("\n")}` : question };
 	}
 	if (q.type === "choice") {
-		return { id, type: "choice", question, options: Object.keys(q.criteria).map((name) => ({ name })) };
+		return { id, type: "choice", question, options: Object.entries(q.criteria).map(([name, criterion]) => ({ name: `${name} — ${criterion}` })) };
 	}
 	return { id, type: "score", question, levels: q.criteria };
 }
 
+export function resolveChoice<Criteria extends Record<string, string>>(
+	q: { type: "choice"; instructions: string; criteria: Criteria },
+	choice: string,
+): (keyof Criteria & string) | undefined {
+	const names = Object.keys(q.criteria);
+	const namedIndex = names.indexOf(choice);
+	const index = namedIndex >= 0 ? namedIndex : (toWireQuestion("", q).options ?? [])
+		.findIndex((option, i) => choice === LETTERS[i] || choice === option.name);
+	return names[index] as (keyof Criteria & string) | undefined;
+}
+
 /** /v1/decisions answer -> pi classifier answer. */
-export function toPiAnswer(q: PiQuestion, a: WireAnswer): Record<string, unknown> {
+export function toPiAnswer(q: PiQuestion, a: WireAnswer) {
 	if (q.type === "bool") {
-		return { type: "bool", probability: a.probabilities?.yes ?? 0 };
+		return { type: "bool" as const, probability: a.probabilities?.yes ?? 0 };
 	}
 	if (q.type === "choice") {
 		const names = Object.keys((q as { criteria: Record<string, string> }).criteria);
@@ -61,15 +95,20 @@ export function toPiAnswer(q: PiQuestion, a: WireAnswer): Record<string, unknown
 		for (const [index, name] of names.entries()) {
 			probabilities[name] = a.probabilities?.[LETTERS[index]] ?? 0;
 		}
-		return { type: "choice", choice: a.choice ?? names[0], probabilities, confidence: probabilities[a.choice ?? names[0]] ?? 0 };
+		if (!a.choice) throw new Error("decisions API missing choice");
+		const choice = resolveChoice(q, a.choice);
+		if (!choice) throw new Error("decisions API returned an unknown choice");
+		return { type: "choice" as const, choice, probabilities, confidence: probabilities[choice] };
 	}
-	return { type: "score", score: a.score ?? 0, confidence: a.probabilities ? Math.max(...Object.values(a.probabilities)) : 0 };
+	return { type: "score" as const, score: a.score ?? 0, confidence: a.probabilities ? Math.max(...Object.values(a.probabilities)) : 0 };
 }
 
 export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsProviderOptions): void {
 	const baseUrl = options.baseUrl.replace(/\/+$/, "");
 	pi.registerProvider("decisions", {
-		...(options.apiKey ? { apiKey: options.apiKey } : {}),
+		// ProviderConfig requires an apiKey for defined models (no oauth here);
+		// the empty literal declares an unauthenticated endpoint.
+		apiKey: options.apiKey ?? "",
 		models: options.models.map((id) => ({
 			type: "classifier" as const,
 			id,
@@ -84,27 +123,21 @@ export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsPr
 			"decisions-v1": {
 				classify: async (model, context) => {
 					const questions: Record<string, WireQuestion> = {};
-					const answers: Record<string, unknown> = {};
+					const answers: Record<string, ReturnType<typeof toPiAnswer>> = {};
 					for (const [id, q] of Object.entries(context.questions as Record<string, PiQuestion>)) {
 						questions[id] = toWireQuestion(id, q);
 					}
-					const response = await fetch(`${baseUrl}/decisions`, {
-						method: "POST",
-						headers: {
-							"Content-Type": "application/json",
-							...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
-						},
-						body: JSON.stringify({ model: model.id, input: context.state, questions: Object.values(questions) }),
-						signal: AbortSignal.timeout(10_000),
+					const body = await requestDecisions({
+						url: `${baseUrl}/decisions`, model: model.id, input: context.state,
+						questions: Object.values(questions), timeoutMs: options.timeoutMs ?? 10_000,
+						apiKey: options.apiKey,
 					});
-					if (!response.ok) throw new Error(`decisions API ${response.status}`);
-					const body = (await response.json()) as { answers?: Record<string, WireAnswer> };
 					for (const [id, q] of Object.entries(context.questions as Record<string, PiQuestion>)) {
 						const wire = body.answers?.[id];
 						if (!wire) throw new Error(`decisions API missing answer for ${id}`);
 						answers[id] = toPiAnswer(q, wire);
 					}
-					return { provider: "decisions", model: model.id, answers, stopReason: "stop" as const };
+					return { api: "decisions-v1", provider: "decisions", model: model.id, answers, stopReason: "stop" as const, timestamp: Date.now() };
 				},
 			},
 		},
