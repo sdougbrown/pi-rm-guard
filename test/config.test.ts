@@ -45,6 +45,19 @@ test("env overrides settings", async () => {
 	}
 });
 
+test("RM_GUARD_REGISTER_PROVIDER env overrides settings in both directions", () => {
+	const saved = process.env.RM_GUARD_REGISTER_PROVIDER;
+	try {
+		process.env.RM_GUARD_REGISTER_PROVIDER = "1";
+		assert.equal(resolveConfig(fakePi({ rmGuard: { registerProvider: false } })).registerProvider, true);
+		process.env.RM_GUARD_REGISTER_PROVIDER = "0";
+		assert.equal(resolveConfig(fakePi({ rmGuard: { registerProvider: true } })).registerProvider, false);
+	} finally {
+		if (saved === undefined) delete process.env.RM_GUARD_REGISTER_PROVIDER;
+		else process.env.RM_GUARD_REGISTER_PROVIDER = saved;
+	}
+});
+
 test("unknown explicit backends are configuration errors, not another engine", () => {
 	assert.throws(() => resolveConfig(fakePi({ rmGuard: { backend: "classifer" } })), /classifer/);
 	process.env.RM_GUARD_BACKEND = "decison";

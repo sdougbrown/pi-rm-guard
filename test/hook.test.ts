@@ -50,6 +50,7 @@ function harness(options: HarnessOptions) {
 	const appended: unknown[] = [];
 	const stateCaptures: (DecisionInput & { description: string })[] = [];
 	let confirmCalls = 0;
+	const notifyCalls: string[] = [];
 	const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<unknown>> = {};
 	const pi = {
 		getSettings: () => ({ rmGuard: options.settings }),
@@ -80,7 +81,9 @@ function harness(options: HarnessOptions) {
 				confirmCalls++;
 				return options.uiApprove ?? true;
 			},
-			notify: () => {},
+			notify: (message: string) => {
+				notifyCalls.push(message);
+			},
 		},
 		sessionManager: { getBranch: () => options.branch ?? defaultBranch() },
 		modelRegistry: registry,
@@ -109,6 +112,7 @@ function harness(options: HarnessOptions) {
 		},
 		appended,
 		stateCaptures,
+		notifyCalls,
 		get confirmCount() {
 			return confirmCalls;
 		},
@@ -161,6 +165,12 @@ test("model approve passes the command through", async () => {
 	assert.equal(h.confirmCount, 0);
 	assert.equal((h.appended[0] as { action: string }).action, "approve");
 	assert.equal((h.appended[0] as { autoApproved: boolean }).autoApproved, true);
+	assert.equal(h.notifyCalls.length, 1, "one notification in UI mode");
+	assert.ok(h.notifyCalls[0].includes("rm -rf node_modules"), "notification carries the original command");
+
+	const print = harness({ command: "rm -rf node_modules", probabilities: { approve: 0.95, ask: 0.03, deny: 0.02 }, hasUI: false });
+	assert.equal(await print.decide(), undefined);
+	assert.equal(print.notifyCalls.length, 0, "no notification in print mode");
 });
 
 test("confident model deny blocks the command", async () => {
