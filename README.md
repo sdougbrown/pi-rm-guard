@@ -95,6 +95,9 @@ RM_GUARD_URL=http://localhost:4000/v1/decisions npm run eval:live
 Unit tests prove routing, evidence delivery, transport handling, and execution of
 model verdicts. Live evals present commands to actual weights without executing
 them; their expected outcomes are not runtime rules.
+The standalone eval reads endpoint and credential environment overrides, not pi's
+merged settings. Mirror those settings through the documented environment variables.
+Jev shares the runtime's key-file resolver, including `RM_GUARD_JEV_KEY_FILE`.
 
 Before shipping, follow the [real-pi verification procedure](.agents/skills/verify-pi-rm-guard/SKILL.md).
 Its real-pi fixtures prove settings loading, model calls, and filesystem outcomes.

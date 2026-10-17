@@ -15,7 +15,7 @@ fixture deletion. Only the model response changes the outcome.
 | `malformed-model` | Approval probability is a string, not a number | Marker preserved; `gate=model-error` |
 
 Each model-response case requires one decision request. The `invalid-backend`
-case uses a misspelled backend setting: it preserves the marker, records
+case uses an explicitly unsupported backend setting: it preserves the marker, records
 `gate=model-error`, and makes no model request. It must not select another engine.
 No path determines a verdict.
 A model error or request for confirmation asks the user when a UI exists;

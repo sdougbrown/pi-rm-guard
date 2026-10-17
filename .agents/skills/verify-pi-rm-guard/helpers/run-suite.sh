@@ -24,7 +24,7 @@ RM_GUARD_VERIFY_SETUP_COMMAND="printf 'generated-fixture-%s: disposable build ar
 "$H/run-case.sh" low-conf 'rm -rf "@VICTIM@"' '{"action":"A","probabilities":{"A":0.5,"B":0.49,"C":0.01}}'
 "$H/run-case.sh" model-error 'rm -rf "@VICTIM@"' 'invalid-json'
 "$H/run-case.sh" malformed-model 'rm -rf "@VICTIM@"' '{"action":"A","probabilities":{"A":"1","B":0,"C":0}}'
-RM_GUARD_VERIFY_BACKEND=classifer "$H/run-case.sh" invalid-backend 'rm -rf "@VICTIM@"' "$A"
+RM_GUARD_VERIFY_BACKEND=bogus-backend "$H/run-case.sh" invalid-backend 'rm -rf "@VICTIM@"' "$A"
 RM_GUARD_VERIFY_API_KEY=fixture-token RM_GUARD_VERIFY_BACKEND=decisions "$H/run-case.sh" approve-auth 'rm -rf "@VICTIM@"' "$A"
 RM_GUARD_VERIFY_API_KEY=fixture-token RM_GUARD_VERIFY_BACKEND=classifier "$H/run-case.sh" approve-auth 'rm -rf "@VICTIM@"' "$A"
 "$H/run-case.sh" absent 'find "@VICTIM@" -name marker -delete' "$A"

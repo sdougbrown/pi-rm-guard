@@ -7,6 +7,9 @@ state, question encoder, and choice-label decoder. `RM_GUARD_API_KEY` supplies a
 optional Bearer token on both routes; protected-service tests cover missing,
 incorrect, and valid tokens. The standalone live eval forwards the token too. The decision stub rejects incorrect endpoint
 paths, so real-pi cases also check URL construction during valid provider setup.
+Each case loads the default export in real pi with `registerProvider: true`.
+Classifier cases use the real registry; skipping registration cannot produce
+the expected request and verdict.
 One per-label criteria definition supplies choice options, classifier
 criteria, and boolean fallback criteria. A unit test compares both wire payloads.
 
@@ -18,6 +21,9 @@ cases prove that variables and globs reach the backend, not that weights approve
 Run the live gates in [../SKILL.md](../SKILL.md) to assess actual judgment:
 
 - `npm run eval:live` presents commands to weights without executing them.
+  Its Jev credential comes from the runtime's environment/key-file resolver,
+  including `RM_GUARD_JEV_KEY_FILE`. The standalone CLI is environment-driven;
+  mirror pi settings through environment overrides when comparing configurations.
 - Live `run-case.sh approve-var` sends evidence through real pi to the configured
   weights; its approving response must produce deletion of only the fixture.
 - `RM_GUARD_VERIFY_BACKEND=classifier` exercises the registered pi provider.

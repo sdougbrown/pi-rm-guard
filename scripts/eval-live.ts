@@ -4,7 +4,7 @@
  * errors are printed with their actual message so live debugging is possible.
  */
 import { createDecisionsBackend, createClassifierBackend, type DecisionInput } from "../src/backends.ts";
-import { readFileSync } from "node:fs";
+import { resolveConfig } from "../src/index.ts";
 
 const cwd = "/repo";
 const quotedMention = "cat <<'EOF'\nrm -rf \"/home/user/project/.agents/evidence/run/victim\"\nEOF";
@@ -177,9 +177,9 @@ async function runDecisions() {
 }
 
 async function runJev() {
-	const key = process.env.TYPESAFE_API_KEY ?? readKey();
+	const key = resolveConfig({}).classifierApiKey;
 	if (!key) {
-		console.log("jev: no TYPESAFE_API_KEY, skipping");
+		console.log("jev: no key configured, skipping");
 		return null;
 	}
 	const backend = createClassifierBackend(fakeRegistry(), { provider: "typesafe", modelId: "jev-latest", apiKey: key });
@@ -201,14 +201,6 @@ async function runCases(name: string, backend: { decide(input: DecisionInput): P
 		console.log(`${pass ? "ok " : "FAIL"} ${name} ${action}${detail} want=${want}  ${input.command}`);
 	}
 	return ok;
-}
-
-function readKey(): string | undefined {
-	try {
-		return readFileSync(`${process.env.HOME}/.secrets/jev.key`, "utf8").trim() || undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 function fakeRegistry() {
