@@ -15,30 +15,26 @@ Two shell constructs that do not affect what an `rm` deletes:
   unquoted delimiter keeps expansion in the body: `$(rm -rf /tmp/x)` on a body
   line executes, so unquoted bodies are still scanned and defer when a
   substitution invokes rm.
-- **The exception is a heredoc consumed by a stdin script interpreter** —
-  `bash`, `sh`, `python`, `node`, `awk`, `ssh`, and their family, anywhere in
-  the opening line (so `cat <<EOF | bash` counts), or a consumer that cannot
-  be resolved statically: a variable expansion (`I=bash; $I <<EOF`) or a
-  function defined in the command (`I() { bash; }; I <<EOF`). That body
-  executes as a script, so it is extracted and judged on its own, in its own
-  child-shell scope: `bash <<'EOF'` with an `rm -rf /` body auto-denies, a
-  benign script body stays absent, an in-scope `rm -rf /tmp/x` body goes to
-  the model, and assignments inside the body never reach the parent
-  command's variable timeline. Command substitutions in the body execute
-  even inside double quotes, so they are caught quote-blind; an unquoted
-  expansion or backtick elsewhere in the body defers (what the child shell
-  would run is unknowable); single-quoted content is judged as data. A bare
-  unassigned name is not a variable — bash looks it up as a command and
-  fails — so `I=bash; I <<EOF` stays a data heredoc. **Here-strings**
-  (`<<<`) follow the same rule: the word fed to an interpreter executes
-  (`bash <<< 'rm -rf /'` auto-denies, an unresolvable word defers), while a
-  data-consumer here-string stays inert (`cat <<< 'rm -rf /etc'` absent).
-  The consumer window joins continuation lines ending in `\` or `|`; a
+- **The consumer decides.** A heredoc or here-string is inert data only
+  when its consumer is a proven data-only program — the list starts with
+  `cat` and `tee`, and the whole pipeline in the opening statement must be
+  data-only (`cat <<EOF | bash` is not data). A shell interpreter (`bash`,
+  `sh`, `zsh`, and the POSIX family) means the body is shell text: it is
+  extracted and judged on its own, in its own child-shell scope —
+  `rm -rf /` bodies auto-deny, in-scope bodies go to the model, assignments
+  stay in the child scope, command substitutions are caught quote-blind
+  (double quotes do not suppress `$()`), unquoted expansions defer, and a
+  body that `cd`s defers (execution context changes). Every other consumer —
+  `python`, `node`, `awk`, `ssh`, `tclsh`, `make -f -`, a variable
+  (`I=bash; $I <<EOF`), a defined function, `source /dev/stdin` — defers
+  unconditionally, without requiring an rm token: the body might run in a
+  language this parser cannot judge (a `subprocess.run` call hides in
+  quoted strings), so the human decides. A bare unassigned name also
+  defers: it may resolve in PATH. `source x.sh <<'EOF'` (a file argument)
+  is data again. Here-strings (`<<<`) follow the same classification. The
+  consumer window joins continuation lines ending in `\` or `|`; a
   trailing `&&` does not join (its left operand never feeds the heredoc
-  onward). `source`/`.` with a stdin file argument (`source /dev/stdin`)
-  is a stdin script reader too: its heredoc/here-string word is judged as a
-  script, while a file argument (`source x.sh <<'EOF'`) leaves the body
-  as data.
+  onward).
 
 Terminator matching is strict (a line must be exactly the delimiter; `<<-`
 allows leading tabs) — a line like `EOF; rm -rf dist` does not terminate a

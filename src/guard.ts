@@ -26,25 +26,33 @@ const UNRESOLVABLE = new Set(["$", "`", '"', "'", "\\", "*", "?", "[", "<", ">",
  * judged as live shell, which restores the pre-heredoc-handling verdicts.
  * Any token in the consuming segment counts, so `cat <<EOF | bash` is caught.
  */
-const SCRIPT_INTERPRETERS = new Set([
-	"bash", "sh", "ash", "dash", "zsh", "ksh", "csh", "tcsh", "fish", "ssh",
-	"python", "python2", "python3", "node", "deno", "bun", "ruby", "irb", "perl",
-	"php", "lua", "awk", "gawk", "R", "Rscript", "julia", "osascript",
-]);
+/**
+ * Consumers whose stdin content is inert data: they only read and transform
+ * it. The set starts deliberately small — a consumer not listed here defers,
+ * and the differential suite validates each addition before it joins.
+ */
+const DATA_CONSUMERS = new Set(["cat", "tee"]);
 
 /**
- * Whether the heredoc's consumer executes its stdin as a script — or cannot
- * be statically resolved, which is judged the same way. Three classes:
- * - a literal stdin script interpreter (`bash`, `sh`, `python`, …), anywhere
- *   in the opening line, so `cat <<EOF | bash` counts
- * - a variable expansion (`$I <<EOF` with `I=bash`): the consumer is the
- *   expansion's value
- * - a function defined in this command (`I() { bash; }; I <<EOF`): the call
- *   runs the function, which can feed the body to an interpreter. A bare
- *   unassigned name is NOT resolvable to a variable — bash looks it up as a
- *   command and fails — so `I=bash; I <<EOF` stays a data heredoc.
+ * Consumers that execute their stdin as a POSIX shell script: the body is
+ * shell text, so the same parser that judges live commands judges it.
  */
-function heredocFeedsInterpreter(command: string, heredocStart: number): boolean {
+const SHELL_INTERPRETERS = new Set([
+	"bash", "sh", "ash", "dash", "zsh", "ksh", "csh", "tcsh", "fish",
+]);
+
+type ConsumerClass = "data" | "shell" | "unknown";
+
+/**
+ * Classify the consumer of a heredoc or here-string. The window is the
+ * statement that opens it (joined across line continuations); pipeline
+ * components each contribute their command word. A component not provably
+ * data-only or a shell interpreter — including variables, defined functions,
+ * or any command outside the two lists — makes the whole statement unknown:
+ * the body might execute in a language this parser cannot judge, so it
+ * defers without requiring an rm token.
+ */
+function classifyConsumer(command: string, heredocStart: number): ConsumerClass {
 	// A line ending in a backslash or a pipe is a bash continuation: the
 	// logical statement spans several physical lines, so the window must join
 	// them. A trailing `&&` does NOT join here — its left operand is a
@@ -79,23 +87,37 @@ function heredocFeedsInterpreter(command: string, heredocStart: number): boolean
 			break;
 		}
 	}
-	const tokens = line.slice(winStart, winEnd).split(/[;|&<>]+/).flatMap((part) => part.split(/\s+/));
+	const window = line.slice(winStart, winEnd);
+	// pipeline components each contribute their command word
+	const commands = window
+		.split("|")
+		.map((part) => {
+			const first = part.trim().split(/\s+/).filter(Boolean)[0] ?? "";
+			return first.replace(/^[("']+|["')]+$/g, "").replace(/^.*\//, "");
+		})
+		.filter((cmd) => cmd.length > 0 && cmd !== "EOF");
+	// `source`/`.` read a FILE argument as a script — when that file is
+	// stdin, the body is the script. Other arguments mean the body is data.
+	const allTokens = window.split(/[\s|;&<>]+/).filter(Boolean);
+	const hasSource = allTokens.some((t) => t === "source" || t === ".");
+	const stdinScript =
+		hasSource && allTokens.some((t) => t === "/dev/stdin" || t === "/dev/fd/0" || t === "-");
 	const functions = new Set<string>();
 	for (const m of command.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{/g)) functions.add(m[1]);
 	// bash also accepts the `function name {` form (and POSIX `function name()`)
 	for (const m of command.matchAll(/function\s+([A-Za-z_][A-Za-z0-9_]*)\s*[{(]/g)) functions.add(m[1]);
-	// `source`/`.` read a FILE argument as a script — when that file is
-	// stdin, the heredoc/here-string word is the script
-	const stdinScript =
-		tokens.some((t) => t === "source" || t === ".") &&
-		tokens.some((t) => t === "/dev/stdin" || t === "/dev/fd/0" || t === "-");
-	return (
-		tokens.some((token) => {
-			if (/\$/.test(token)) return true;
-			const bare = token.replace(/^["']+|["']+$/g, "");
-			return SCRIPT_INTERPRETERS.has(bare.replace(/^.*\//, "")) || functions.has(bare);
-		}) || stdinScript
-	);
+	if (stdinScript) return "shell";
+	if (hasSource) return "data"; // a file argument means the stdin is ignored
+	let hasShell = false;
+	for (const cmd of commands) {
+		if (functions.has(cmd)) return "unknown";
+		if (SHELL_INTERPRETERS.has(cmd)) {
+			hasShell = true;
+			continue;
+		}
+		if (!DATA_CONSUMERS.has(cmd)) return "unknown";
+	}
+	return hasShell ? "shell" : "data";
 }
 
 function hasUnresolvableChars(token: string): boolean {
@@ -396,10 +418,11 @@ function parseHereString(command: string, start: number): { word: string; after:
  * untouched; their text is judged through the normal rules, which can only
  * over-gate it.
  */
-function extractHeredocs(command: string): { remainder: string; expansionBodies: string[]; scriptBodies: string[] } {
+function extractHeredocs(command: string): { remainder: string; expansionBodies: string[]; scriptBodies: string[]; unknownConsumers: number } {
 	let out = "";
 	const expansionBodies: string[] = [];
 	const scriptBodies: string[] = [];
+	let unknownConsumers = 0;
 	let quote: string | null = null;
 	let paren = 0;
 	let backticks = false;
@@ -459,13 +482,18 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 			continue;
 		}
 		if (paren === 0 && !backticks && ch === "<" && command[i + 1] === "<" && command[i + 2] === "<" && command[i - 1] !== "<") {
-			// Here-string: one word fed to the consumer's stdin. It executes as
-			// a script when the consumer is an interpreter — otherwise the
-			// normal segment rules already handle it (quoted form inert,
-			// unquoted form substitution-scanned), so it is left untouched.
+			// Here-string: one word fed to the consumer's stdin. A data consumer
+			// leaves it in the text (the normal segment rules scan it); a shell
+			// consumer gets it judged as a script; an unknown consumer defers.
 			const parsed = parseHereString(command, i);
-			if (parsed && heredocFeedsInterpreter(command, i)) {
+			const consumer = parsed ? classifyConsumer(command, i) : null;
+			if (parsed && consumer === "shell") {
 				scriptBodies.push(parsed.word);
+				i = parsed.after;
+				continue;
+			}
+			if (parsed && consumer === "unknown") {
+				unknownConsumers += 1;
 				i = parsed.after;
 				continue;
 			}
@@ -480,10 +508,13 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 		) {
 			const parsed = parseHeredoc(command, i);
 			if (parsed) {
-				// An interpreter-fed body executes as a script: keep it out of the
-				// parent command entirely — its assignments run in a child shell —
-				// and judge it on its own below, as a script.
-				if (heredocFeedsInterpreter(command, i)) scriptBodies.push(parsed.body);
+				const consumer = classifyConsumer(command, i);
+				// A data consumer's body is inert (expansions still scanned); a
+				// shell consumer's body is shell text, judged on its own; an
+				// unknown consumer defers — the body might run in a language
+				// this parser cannot judge.
+				if (consumer === "shell") scriptBodies.push(parsed.body);
+				else if (consumer === "unknown") unknownConsumers += 1;
 				else if (!parsed.quoted) expansionBodies.push(parsed.body);
 				pendingSkip = parsed.skipTo;
 				i = parsed.afterDelimiter;
@@ -493,7 +524,7 @@ function extractHeredocs(command: string): { remainder: string; expansionBodies:
 		out += ch;
 		i++;
 	}
-	return { remainder: out, expansionBodies, scriptBodies };
+	return { remainder: out, expansionBodies, scriptBodies, unknownConsumers };
 }
 
 /**
@@ -861,7 +892,7 @@ export type CommandVerdict =
 
 export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	const home = process.env.HOME ?? "";
-	const { remainder, expansionBodies, scriptBodies } = extractHeredocs(command);
+	const { remainder, expansionBodies, scriptBodies, unknownConsumers } = extractHeredocs(command);
 	const segments = splitSegments(remainder);
 	if (segments.length === 0 && expansionBodies.length === 0 && scriptBodies.length === 0) {
 		return { kind: "defer", reason: "empty command" };
@@ -947,8 +978,9 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 	// own child-shell scope — its assignments never reach the parent timeline.
 	// Command substitutions inside the body execute even inside double quotes,
 	// so a quote-blind scan catches them; an unquoted expansion or backtick
-	// outside a substitution makes what runs unknowable and defers. Single-
-	// quoted content is judged as data.
+	// outside a substitution makes what runs unknowable and defers. A body
+	// that changes directory makes target resolution wrong for the rest of
+	// the script — defer. Single-quoted content is judged as data.
 	for (const body of scriptBodies) {
 		if (heredocInvokesRm(body)) {
 			rmDeferred = true;
@@ -961,6 +993,11 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 			reason = "script content is not statically resolvable";
 			continue;
 		}
+		if (strippedBody !== null && /(^|\s)(cd|pushd)(\s|$)/.test(strippedBody)) {
+			rmDeferred = true;
+			reason = "script changes directory before deleting";
+			continue;
+		}
 		const sub = analyzeCommand(body, cwd);
 		if (sub.kind === "deny") return sub;
 		if (sub.kind === "defer") {
@@ -970,6 +1007,10 @@ export function analyzeCommand(command: string, cwd: string): CommandVerdict {
 			sawRecursive = true;
 			targets.push(...sub.targets);
 		}
+	}
+	if (unknownConsumers > 0) {
+		rmDeferred = true;
+		reason = "heredoc consumer is not a recognized data or shell program";
 	}
 
 	if (!sawRecursive && !rmDeferred) return { kind: "absent" };

@@ -284,7 +284,8 @@ test("heredoc: interpreter consumers deny, judge, or pass through the body", () 
 	absent(["bash <<'EOF'", "echo hi", "EOF", "ls"].join("\n"));
 	// unresolvable body content reaches the defer branch, not just deny/eligible
 	defer(["bash <<EOF", "rm -rf $X", "EOF", "ls"].join("\n"));
-	absent(["python <<'EOF'", "print('hi')", "EOF", "ls"].join("\n"));
+	// non-shell interpreters are not judgeable by a shell parser: defer
+	defer(["python <<'EOF'", "print('hi')", "EOF", "ls"].join("\n"));
 });
 
 test("heredoc: pipe consumers feed the body onward and still judge it", () => {
@@ -316,14 +317,15 @@ test("heredoc: quoted, path-prefixed, and continued interpreter names still coun
 });
 
 test("heredoc: variable and function consumers are unresolvable, not data", () => {
-	deny(["I=bash", "$I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
-	deny(["I() { bash; }", "I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
-	deny(["function I { bash; }", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
-	// a bare unassigned name is not a variable — bash looks it up as a
-	// command and fails, so the body stays data; both function definition
-	// forms are consumers
-	absent(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
-	deny(["function I() { bash; }", "I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
+	// the consumer identity is unresolvable, so the body defers without
+	// needing an rm token — even when the body looks like shell
+	defer(["I=bash", "$I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
+	defer(["I() { bash; }", "I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
+	defer(["function I { bash; }", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
+	defer(["function I() { bash; }", "I <<EOF", "rm -rf /", "EOF", "ls"].join("\n"));
+	// a bare unassigned name is not provably data: it may resolve in PATH
+	// (the tclsh class), so it defers — bash would error here, an over-gate
+	defer(["I=bash", "I <<EOF", "rm -rf /etc", "EOF", "ls"].join("\n"));
 });
 
 test("heredocs inside substitutions or quotes are judged as live text", () => {
