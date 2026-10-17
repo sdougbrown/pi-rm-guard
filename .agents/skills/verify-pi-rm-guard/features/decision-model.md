@@ -3,7 +3,9 @@
 The model judges the whole command from its text, cwd, recent user requests,
 and bounded recent tool evidence. No static target list is presented as verified.
 Direct and registered-provider requests use the same structured state and question
-encoder. One per-label criteria definition supplies choice options, classifier
+encoder and choice-label decoder. The decision stub rejects incorrect endpoint
+paths, so real-pi cases also check URL construction during valid provider setup.
+One per-label criteria definition supplies choice options, classifier
 criteria, and boolean fallback criteria. A unit test compares both wire payloads.
 
 The `context` case in `../helpers/run-suite.sh` supplies a prior tool result whose
@@ -30,6 +32,8 @@ Classifier fallback applies only to the current request. A transient failure doe
 not disable later three-way judgments; backend unit tests exercise recovery.
 A valid fallback approval can authorize execution after a failed choice probe;
 the failure itself never supplies permission.
+If the branch snapshot fails, the current request and raw command still reach
+the model; a hook test exercises this recovery without inventing session evidence.
 
 The configured deadline reaches the registered provider's fetch and the live
 harness forwarder, without a shorter fixed cap. `provider-request.test.ts` checks

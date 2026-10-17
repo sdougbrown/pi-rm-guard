@@ -2,7 +2,7 @@
  * Decision backends judge a raw command from session evidence.
  * Only valid model responses authorize execution; without one, errors escalate.
  */
-import { toWireQuestion } from "./decisions-provider.ts";
+import { resolveChoice, toWireQuestion } from "./decisions-provider.ts";
 
 export interface DecisionInput {
 	/** The raw, unmodified command text — no parsing or target resolution. */
@@ -86,12 +86,11 @@ function choiceVerdict(probabilities: Record<"approve" | "ask" | "deny", number>
 	if (!Object.values(probabilities).every(isProbability)) return { error: "model returned invalid choice probabilities" };
 	if (!isProbability(threshold)) return { error: "invalid approval threshold" };
 	const { approve, ask, deny } = probabilities;
-	const labels = ["approve", "ask", "deny"] as const;
-	let label: typeof labels[number] = approve > ask && approve > deny ? "approve" : deny > ask && deny > approve ? "deny" : "ask";
+	let label: keyof typeof POLICY = approve > ask && approve > deny ? "approve" : deny > ask && deny > approve ? "deny" : "ask";
 	if (choice !== undefined) {
-		const index = labels.findIndex((name, i) => choice === name || choice === String.fromCharCode(65 + i) || choice === ACTION_QUESTION.options?.[i]?.name);
-		if (index < 0) return { error: "model returned an unknown choice" };
-		label = labels[index];
+		const resolved = resolveChoice(ACTION_SPEC, choice);
+		if (!resolved) return { error: "model returned an unknown choice" };
+		label = resolved;
 	}
 	const probability = probabilities[label];
 	if (label === "approve" && probability >= threshold) return { action: "approve", probability, label };

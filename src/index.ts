@@ -32,9 +32,9 @@ export interface RmGuardSettings {
 	keyFile?: string;
 }
 
-function readRmGuardSettings(pi: ExtensionAPI): RmGuardSettings | undefined {
+function readRmGuardSettings(pi: { getSettings?: () => unknown }): RmGuardSettings | undefined {
 	try {
-		const settings = (pi as { getSettings?: () => { rmGuard?: RmGuardSettings } }).getSettings?.();
+		const settings = pi.getSettings?.() as { rmGuard?: RmGuardSettings } | undefined;
 		return settings?.rmGuard;
 	} catch {
 		return undefined;
@@ -47,7 +47,7 @@ function readRmGuardSettings(pi: ExtensionAPI): RmGuardSettings | undefined {
  * pi merges global and project settings (PI_CODING_AGENT_DIR-aware) before
  * this sees them.
  */
-export function resolveConfig(pi: ExtensionAPI): RmGuardConfig {
+export function resolveConfig(pi: { getSettings?: () => unknown }): RmGuardConfig {
 	const settings = readRmGuardSettings(pi) ?? {};
 	const env = (name: string): string | undefined => process.env[name];
 	const str = (key: keyof RmGuardSettings, envName: string, fallback: string): string =>
@@ -178,7 +178,7 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 			userRequests.push(prompt);
 		}
 		userRequests.splice(0, Math.max(0, userRequests.length - MAX_USER_REQUESTS));
-		let decision: DecisionOutcome;
+		let decision: DecisionOutcome | { error: string };
 		try {
 			decision = await getBackend(ctx).decide({ command, cwd: ctx.cwd, userRequests, evidence });
 		} catch (error) {

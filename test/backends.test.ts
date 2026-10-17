@@ -163,8 +163,9 @@ test("jev backend honors a configured threshold", async () => {
 });
 
 test("jev backend falls back to bool when choice is rejected", async () => {
-	const questionsSeen: unknown[] = [];
+	const questionsSeen: object[] = [];
 	const classify: ClassifyFn = async (_state, questions) => {
+		assert.ok(questions && typeof questions === "object");
 		questionsSeen.push(questions);
 		if ("action" in questions) throw new Error("choice unsupported");
 		return { answers: { safe: { probability: 0.7 } }, stopReason: "stop" };
@@ -271,6 +272,15 @@ test("the decisions request aborts instead of accepting a late approval", async 
 		}),
 	});
 	assert.ok("error" in await backend.decide(input()));
+});
+
+test("decisions response with probabilities but no choice is an error, not argmax", async () => {
+	const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: { action: { probabilities: { A: 1, B: 0, C: 0 } } } }),
+			{ status: 200, headers: { "content-type": "application/json" } }),
+	});
+	const result = await backend.decide(input());
+	assert.ok("error" in result, "must be an error, not an argmax approve");
 });
 
 test("unknown choices cannot authorize execution through either backend", async () => {

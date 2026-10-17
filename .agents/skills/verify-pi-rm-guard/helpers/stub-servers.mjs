@@ -72,6 +72,10 @@ const chat = http.createServer((req, res) => {
 });
 
 const decisions = http.createServer((req, res) => {
+	if (req.method !== "POST" || req.url !== "/v1/decisions") {
+		res.writeHead(404).end();
+		return;
+	}
 	let body = "";
 	req.on("data", (c) => (body += c));
 	req.on("end", async () => {
@@ -179,6 +183,9 @@ if (process.argv[3] === "--selftest") {
 		const answer = (await decRes.json())?.answers?.action;
 		if (!answer || answer.choice !== decision.action || JSON.stringify(answer.probabilities) !== JSON.stringify(decision.probabilities))
 			fail(`decisions response does not echo decision.json: ${JSON.stringify(answer)}`);
+
+		const wrongRoute = await fetch(`http://127.0.0.1:${decPort}/v1/decisions/decisions`, { method: "POST" });
+		if (wrongRoute.status !== 404) fail("an invalid decisions route must not produce a verdict");
 
 		console.log("selftest: OK");
 		process.exit(0);

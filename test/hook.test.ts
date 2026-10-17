@@ -48,7 +48,7 @@ test("invalid backend settings block without inference when no UI is available",
 function harness(options: HarnessOptions) {
 	const { probabilities = { approve: 0.9, ask: 0.05, deny: 0.05 }, command } = options;
 	const appended: unknown[] = [];
-	const stateCaptures: Record<string, unknown>[] = [];
+	const stateCaptures: (DecisionInput & { description: string })[] = [];
 	let confirmCalls = 0;
 	const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<unknown>> = {};
 	const pi = {
@@ -65,7 +65,7 @@ function harness(options: HarnessOptions) {
 			assert.equal(`${provider}/${id}`, options.classifier ?? "typesafe/jev-latest");
 			return { id };
 		},
-		classify: async (_model: unknown, callCtx: { state: Record<string, unknown> }) => {
+		classify: async (_model: unknown, callCtx: { state: DecisionInput & { description: string } }) => {
 			if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
 			if (options.classifyError) throw new Error(options.classifyError);
 			stateCaptures.push(callCtx.state);
@@ -134,13 +134,25 @@ test("variable, glob, home, and outside-cwd rm reach the decision model", async 
 test("decision input carries raw command, cwd, user requests, and session evidence", async () => {
 	const h = harness({ command: "rm -rf $BUILD_DIR" });
 	await h.decide();
-	const state = h.stateCaptures[0] as DecisionInput & { description: string };
+	const state = h.stateCaptures[0];
 	assert.equal(state.command, "rm -rf $BUILD_DIR");
 	assert.equal(state.cwd, "/repo");
 	assert.ok(state.userRequests.includes("clean the build cache"), "includes current prompt");
 	assert.ok(state.userRequests.includes("please clean up the build artifacts"), "includes branch user message");
 	assert.ok(state.evidence.some((e) => e.includes("du -sh node_modules")), "includes tool call");
 	assert.ok(state.evidence.some((e) => e.includes("2.1G node_modules")), "includes tool result");
+});
+
+test("a failing branch snapshot still delivers the raw command and current request to the model", async () => {
+	const h = harness({ command: "rm -rf dist" });
+	h.ctx.sessionManager.getBranch = () => { throw new Error("session store unavailable"); };
+	const result = await h.decide();
+	assert.equal(result, undefined, "approve passes through");
+	assert.equal(h.confirmCount, 0);
+	assert.equal(h.stateCaptures.length, 1);
+	const state = h.stateCaptures[0] as DecisionInput;
+	assert.equal(state.command, "rm -rf dist");
+	assert.ok(state.userRequests.includes("clean the build cache"), "current prompt survives a failed branch read");
 });
 
 test("model approve passes the command through", async () => {

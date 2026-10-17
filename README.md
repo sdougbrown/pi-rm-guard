@@ -64,7 +64,8 @@ encoding. Other pi-known classifier models use `provider/model-id`, such as
 Environment overrides settings. Unknown backend values are configuration errors,
 not aliases for another engine. Config and provider registration resolve on the
 first routed command. `RM_GUARD_API_KEY` supplies an optional registered-provider
-key; classifier credentials otherwise come from pi.
+key; classifier credentials otherwise come from pi. `keyFile` is a legacy
+fallback: keep it private, since this extension does not enforce file modes.
 
 The decisions backend approves at p≥0.85; the classifier backend defaults to
 p≥0.6. `threshold` overrides the approval threshold. Both require p≥0.99 for denial.

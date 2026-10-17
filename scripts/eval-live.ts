@@ -213,12 +213,12 @@ function readKey(): string | undefined {
 function fakeRegistry() {
 	return {
 		findOfType: () => ({ id: "jev-latest" }),
-		classify: async (_model: unknown, ctx: { state: unknown; questions: unknown }, opts?: { apiKey?: string }) => {
+		classify: async (_model: unknown, ctx: { state: unknown; questions: Record<string, { type: string }> }, opts?: { apiKey?: string }) => {
 			const wire = {
 				model: "jev-latest",
 				state: ctx.state,
 				questions: Object.fromEntries(
-					Object.entries(ctx.questions).map(([id, q]) => [id, (q as { type: string }).type === "bool" ? { ...q, type: "noul" } : q]),
+					Object.entries(ctx.questions).map(([id, q]) => [id, q.type === "bool" ? { ...q, type: "noul" } : q]),
 				),
 			};
 			const res = await fetch("https://api.typesafe.ai/v1/systemone", {

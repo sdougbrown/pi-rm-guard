@@ -51,10 +51,21 @@ export function toWireQuestion(id: string, q: PiQuestion): WireQuestion {
 	return { id, type: "score", question, levels: q.criteria };
 }
 
+export function resolveChoice<Criteria extends Record<string, string>>(
+	q: { type: "choice"; instructions: string; criteria: Criteria },
+	choice: string,
+): (keyof Criteria & string) | undefined {
+	const names = Object.keys(q.criteria);
+	const namedIndex = names.indexOf(choice);
+	const index = namedIndex >= 0 ? namedIndex : (toWireQuestion("", q).options ?? [])
+		.findIndex((option, i) => choice === LETTERS[i] || choice === option.name);
+	return names[index] as (keyof Criteria & string) | undefined;
+}
+
 /** /v1/decisions answer -> pi classifier answer. */
-export function toPiAnswer(q: PiQuestion, a: WireAnswer): Record<string, unknown> {
+export function toPiAnswer(q: PiQuestion, a: WireAnswer) {
 	if (q.type === "bool") {
-		return { type: "bool", probability: a.probabilities?.yes ?? 0 };
+		return { type: "bool" as const, probability: a.probabilities?.yes ?? 0 };
 	}
 	if (q.type === "choice") {
 		const names = Object.keys((q as { criteria: Record<string, string> }).criteria);
@@ -63,12 +74,11 @@ export function toPiAnswer(q: PiQuestion, a: WireAnswer): Record<string, unknown
 			probabilities[name] = a.probabilities?.[LETTERS[index]] ?? 0;
 		}
 		if (!a.choice) throw new Error("decisions API missing choice");
-		const wireOptions = toWireQuestion("", q).options ?? [];
-		const choice = names.includes(a.choice) ? a.choice : names[wireOptions.findIndex((option, index) => a.choice === LETTERS[index] || a.choice === option.name)];
+		const choice = resolveChoice(q, a.choice);
 		if (!choice) throw new Error("decisions API returned an unknown choice");
-		return { type: "choice", choice, probabilities, confidence: probabilities[choice] };
+		return { type: "choice" as const, choice, probabilities, confidence: probabilities[choice] };
 	}
-	return { type: "score", score: a.score ?? 0, confidence: a.probabilities ? Math.max(...Object.values(a.probabilities)) : 0 };
+	return { type: "score" as const, score: a.score ?? 0, confidence: a.probabilities ? Math.max(...Object.values(a.probabilities)) : 0 };
 }
 
 export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsProviderOptions): void {
@@ -91,7 +101,7 @@ export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsPr
 			"decisions-v1": {
 				classify: async (model, context) => {
 					const questions: Record<string, WireQuestion> = {};
-					const answers: Record<string, unknown> = {};
+					const answers: Record<string, ReturnType<typeof toPiAnswer>> = {};
 					for (const [id, q] of Object.entries(context.questions as Record<string, PiQuestion>)) {
 						questions[id] = toWireQuestion(id, q);
 					}
@@ -111,7 +121,7 @@ export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsPr
 						if (!wire) throw new Error(`decisions API missing answer for ${id}`);
 						answers[id] = toPiAnswer(q, wire);
 					}
-					return { provider: "decisions", model: model.id, answers, stopReason: "stop" as const };
+					return { api: "decisions-v1", provider: "decisions", model: model.id, answers, stopReason: "stop" as const, timestamp: Date.now() };
 				},
 			},
 		},

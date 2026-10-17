@@ -56,3 +56,10 @@ test("missing getSettings is tolerated", () => {
 	const c = resolveConfig({} as never);
 	assert.equal(c.backend, "classifier");
 });
+
+test("a throwing getSettings falls back to defaults instead of propagating", () => {
+	const c = resolveConfig({ getSettings: () => { throw new Error("settings not yet loaded"); } } as never);
+	assert.equal(c.backend, "classifier");
+	assert.equal(c.classifier, "typesafe/jev-latest");
+	assert.equal(c.decisionsUrl, "http://localhost:4000/v1/decisions");
+});
