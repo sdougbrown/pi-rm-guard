@@ -186,7 +186,7 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 		}
 
 		if ("error" in decision) {
-			return requireHuman(ctx, command, `decision model unavailable: ${decision.error}`, "model-error", userRequests);
+			return requireHuman(ctx, command, `decision model unavailable: ${decision.error}`, "model-error", userRequests, evidence);
 		}
 
 		pi.appendEntry("rm-guard", {
@@ -207,7 +207,7 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 			return { block: true, reason: `rm-guard: ${getBackend(ctx).name} denied (${decision.probability.toFixed(2)}): ${command}` };
 		}
 
-		return requireHuman(ctx, command, `model chose ${decision.label} (p=${decision.probability.toFixed(2)}) — deferring to human`, "model-ask", userRequests);
+		return requireHuman(ctx, command, `model chose ${decision.label} (p=${decision.probability.toFixed(2)}) — deferring to human`, "model-ask", userRequests, evidence);
 	});
 
 	function requireHuman(
@@ -216,8 +216,9 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 		reason: string,
 		gate: string,
 		userRequests: string[],
+		evidence: string[],
 	) {
-		pi.appendEntry("rm-guard", { command, gate, reason, userRequests, autoApproved: false });
+		pi.appendEntry("rm-guard", { command, gate, reason, userRequests, evidence, autoApproved: false });
 		if (!ctx.hasUI) {
 			return { block: true, reason: `rm-guard: "${command}" requires approval and no UI is available (${reason})` };
 		}

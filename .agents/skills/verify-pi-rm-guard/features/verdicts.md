@@ -21,3 +21,7 @@ No path determines a verdict.
 A model error or request for confirmation asks the user when a UI exists;
 without a UI it blocks. The real-pi harness proves the no-UI behavior; hook unit
 tests cover accepting and rejecting interactive confirmation.
+Escalation entries (`gate=model-ask`, `gate=model-error`) retain `userRequests`
+and `evidence` alongside the command and reason. This preserves the collected
+input context when the model asks or fails. Confirmation prompts still show
+the command and escalation reason.

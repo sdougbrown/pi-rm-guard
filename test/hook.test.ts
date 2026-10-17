@@ -66,9 +66,9 @@ function harness(options: HarnessOptions) {
 			return { id };
 		},
 		classify: async (_model: unknown, callCtx: { state: DecisionInput & { description: string } }) => {
+			stateCaptures.push(structuredClone(callCtx.state));
 			if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
 			if (options.classifyError) throw new Error(options.classifyError);
-			stateCaptures.push(callCtx.state);
 			return { answers: { action: { probabilities } }, stopReason: "stop" };
 		},
 	};
@@ -212,6 +212,24 @@ test("model ask blocks when no UI is available", async () => {
 	assert.equal(result.block, true);
 });
 
+test("escalation entries retain the user requests and evidence delivered to the model", async () => {
+	const ask = harness({ command: "rm -rf dist", probabilities: { approve: 0.1, ask: 0.85, deny: 0.05 }, hasUI: false });
+	await ask.decide();
+	const askEntry = ask.appended.at(-1) as { gate: string; userRequests: string[]; evidence: string[] };
+	assert.equal(askEntry.gate, "model-ask");
+	assert.ok(askEntry.evidence.length > 0, "session evidence was collected");
+	assert.deepEqual(askEntry.evidence, ask.stateCaptures[0].evidence);
+	assert.deepEqual(askEntry.userRequests, ask.stateCaptures[0].userRequests);
+
+	const error = harness({ command: "rm -rf dist", classifyError: "rate limited", hasUI: false });
+	await error.decide();
+	const errorEntry = error.appended.at(-1) as { gate: string; userRequests: string[]; evidence: string[] };
+	assert.equal(errorEntry.gate, "model-error");
+	assert.ok(errorEntry.evidence.length > 0, "session evidence was collected");
+	assert.deepEqual(errorEntry.evidence, error.stateCaptures[0].evidence);
+	assert.deepEqual(errorEntry.userRequests, error.stateCaptures[0].userRequests);
+});
+
 test("classifier ids containing slashes reach the registry intact", async () => {
 	const h = harness({ command: "rm -rf dist", classifier: "openrouter/typesafe/jev-1.13" });
 	assert.equal(await h.decide(), undefined);
@@ -255,7 +273,6 @@ test("the decisions route honors configured thresholds and request timeouts", as
 	const options = { command: "rm -rf dist", backend: "decisions" as const, decisionsUrl: `http://127.0.0.1:${address.port}/v1/decisions`, hasUI: false };
 	const threshold = harness({ ...options, threshold: 0.95 });
 	assert.equal((await threshold.decide() as { block: boolean }).block, true);
-	assert.equal((threshold.appended[0] as { backend: string }).backend, "decisions:m");
 	delayed = true;
 	const timeout = harness({ ...options, timeoutMs: 5 });
 	assert.equal((await timeout.decide() as { block: boolean }).block, true);

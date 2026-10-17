@@ -137,9 +137,9 @@ expectation_for() {
 		heredoc-quoted)
 			echo "SURVIVED|action=approve autoApproved=true|1" ;;
 		deny) echo "SURVIVED|action=deny autoApproved=false|1" ;;
-		defer|low-conf) echo "SURVIVED|gate=model-ask autoApproved=false|1" ;;
-		model-error|malformed-model) echo "SURVIVED|gate=model-error autoApproved=false|1" ;;
-		invalid-backend) echo "SURVIVED|gate=model-error autoApproved=false|0" ;;
+		defer|low-conf) echo "SURVIVED|gate=model-ask autoApproved=false userRequests=+ evidence=+|1" ;;
+		model-error|malformed-model) echo "SURVIVED|gate=model-error autoApproved=false userRequests=+ evidence=+|1" ;;
+		invalid-backend) echo "SURVIVED|gate=model-error autoApproved=false userRequests=+ evidence=+|0" ;;
 		absent) echo "DELETED|absent|0" ;;
 		*)                echo "" ;;
 	esac
