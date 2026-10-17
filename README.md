@@ -45,8 +45,10 @@ in global or project pi settings:
 }
 ```
 
-Set `backend` to `decisions` to call that endpoint directly instead. Other pi-known
-classifier models use `provider/model-id`, such as `openrouter/typesafe/jev-1.13`.
+Set `backend` to `decisions` to call that endpoint directly instead.
+Direct requests and the registered `decisions` provider share state and question
+encoding. Other pi-known classifier models use `provider/model-id`, such as
+`openrouter/typesafe/jev-1.13`.
 
 | Setting | Environment override | Default |
 |---|---|---|

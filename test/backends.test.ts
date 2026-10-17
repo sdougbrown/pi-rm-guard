@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { buildDecisionsInput, createDecisionsBackend, createJevBackend, type DecisionInput } from "../src/backends.ts";
+import { createClassifierBackend, createDecisionsBackend, type DecisionInput } from "../src/backends.ts";
+import { toWireQuestion } from "../src/decisions-provider.ts";
 
 const choiceResponse = (approve: number, ask: number, deny: number) =>
 	new Response(
@@ -23,12 +24,24 @@ const input = (command = "rm -rf dist"): DecisionInput => ({
 	evidence: ["bash: du -sh node_modules", "result: 2.1G node_modules"],
 });
 
-test("decisions input presents the raw command and context", () => {
-	const built = buildDecisionsInput(input());
-	assert.match(built, /rm -rf dist/);
-	assert.match(built, /\/repo/);
-	assert.match(built, /clean up the build cache/);
-	assert.match(built, /du -sh node_modules/);
+test("both endpoint routes send identical decision state and questions", async () => {
+	let directBody: { input: unknown; questions: unknown[] } | undefined;
+	const direct = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async (_url, init) => { directBody = JSON.parse(String(init?.body)); return choiceResponse(0.99, 0.005, 0.005); },
+	});
+	let state: Record<string, unknown> | undefined;
+	let questions: { action: Parameters<typeof toWireQuestion>[1] } | undefined;
+	const classifier = createJevBackend(fakeRegistry(), { modelId: "m", apiKey: undefined,
+		classify: async (s, q) => { state = s; questions = q as typeof questions; return { action: { probabilities: { approve: 0.99, ask: 0.005, deny: 0.005 } } }; },
+	});
+	await direct.decide(input());
+	await classifier.decide(input());
+	assert.deepEqual(directBody?.input, state);
+	assert.ok(questions);
+	assert.deepEqual(directBody?.questions, [toWireQuestion("action", questions.action)]);
+	assert.equal(state?.command, input().command);
+	assert.deepEqual(state?.userRequests, input().userRequests);
+	assert.deepEqual(state?.evidence, input().evidence);
 });
 
 test("decisions backend maps the 3-way choice to approve/deny/defer", async () => {
@@ -48,7 +61,7 @@ test("decisions backend maps the 3-way choice to approve/deny/defer", async () =
 	assert.equal(body.model, "test-model");
 	assert.equal(body.questions[0].type, "choice");
 	assert.equal(body.questions.length, 1);
-	assert.match(body.input, /rm -rf dist/);
+	assert.equal(body.input.command, "rm -rf dist");
 
 	const deny = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.001, 0.001, 0.999) }).decide(input("rm -rf /"));
 	assert.deepEqual(deny, { action: "deny", probability: 0.999, label: "deny" });
@@ -260,10 +273,48 @@ test("the decisions request aborts instead of accepting a late approval", async 
 	assert.ok("error" in await backend.decide(input()));
 });
 
-test("backends report their default thresholds", () => {
-	assert.equal(createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, classify: async () => ({ probability: 0 }) }).defaultThreshold, 0.6);
-	assert.equal(createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1 }).defaultThreshold, 0.85);
+test("unknown choices cannot authorize execution through either backend", async () => {
+	const direct = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: { action: { choice: "D", probabilities: { A: 0.99, B: 0.005, C: 0.005 } } } })),
+	});
+	assert.ok("error" in await direct.decide(input()));
+	const classifier = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined,
+		classify: async () => ({ action: { choice: "weird", probabilities: { approve: 0.99, ask: 0.005, deny: 0.005 } } }),
+	});
+	assert.ok("error" in await classifier.decide(input()));
 });
+
+test("malformed boolean answers are model errors, not model judgments", async () => {
+	for (const safe of [{}, { probability: 1.5 }]) {
+		const backend = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined,
+			classify: async (_state, questions) => {
+				if (questions && typeof questions === "object" && "action" in questions) throw new Error("choice unsupported");
+				return { answers: { safe } };
+			},
+		});
+		assert.ok("error" in await backend.decide(input()));
+	}
+});
+
+test("missing classifier models fail before inference and identify the configuration", async () => {
+	const backend = createClassifierBackend({ findOfType: () => undefined, classify: async () => { assert.fail("inference must not run without a model"); } },
+		{ provider: "typesafe", modelId: "missing-model", apiKey: undefined });
+	const result = await backend.decide(input());
+	assert.ok("error" in result);
+	assert.match(result.error, /missing-model/);
+});
+
+test("a successful fallback is a model approval, not permission from the failed probe", async () => {
+	let calls = 0;
+	const backend = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined,
+		classify: async () => { if (++calls === 1) throw new Error("connection reset"); return { safe: { probability: 0.95 } }; },
+	});
+	assert.deepEqual(await backend.decide(input()), { action: "approve", probability: 0.95, label: "approve" });
+});
+
+function createJevBackend(registry: Parameters<typeof createClassifierBackend>[0], options: Omit<Parameters<typeof createClassifierBackend>[1], "provider">) {
+	return createClassifierBackend(registry, { provider: "typesafe", ...options });
+}
 
 function fakeRegistry() {
 	return {

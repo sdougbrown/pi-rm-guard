@@ -161,7 +161,7 @@ test("model ask defers to confirm UI; user decision controls the result", async 
 	assert.equal((rejected.appended.at(-1) as { autoApproved: boolean }).autoApproved, false);
 });
 
-test("below-threshold approve defers to the human (RM_GUARD_THRESHOLD honored)", async () => {
+test("below-threshold approve defers to the human (configured classifier threshold honored)", async () => {
 	const h = harness({ command: "rm -rf dist", probabilities: { approve: 0.85, ask: 0.1, deny: 0.05 }, threshold: 0.9 });
 	const result = (await h.decide()) as { block?: boolean };
 	assert.equal(h.confirmCount, 1);

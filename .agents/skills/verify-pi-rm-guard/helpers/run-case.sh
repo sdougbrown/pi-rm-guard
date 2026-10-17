@@ -126,8 +126,9 @@ echo "evidence:  $CASE_DIR"
 # --- assertions: documented end states per case (SKILL.md, features/*.md) ----
 # Table: <case> → "<marker state>|<session-entry field tokens>|<decisions calls>".
 # Entry tokens are simple field checks against any one rm-guard entry
-# (e.g. "gate=denied", "action=approve autoApproved=true"); "absent" requires
-# no rm-guard entry at all; "targets=[]" an empty, "targets=+" a non-empty list.
+# (e.g. "gate=model-error", "action=approve autoApproved=true"); "absent" requires
+# no rm-guard entry at all. userRequests and evidence are context arrays on
+# model-verdict entries.
 expectation_for() {
 	case "$1" in
 		approve|approve-var|approve-glob|approve-redirect|heredoc-bash|heredoc-sub|non-recursive|context)

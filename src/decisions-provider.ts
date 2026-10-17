@@ -45,7 +45,7 @@ export function toWireQuestion(id: string, q: PiQuestion): WireQuestion {
 		return { id, type: "yes_no", question: parts.length > 0 ? `${question}\n${parts.join("\n")}` : question };
 	}
 	if (q.type === "choice") {
-		return { id, type: "choice", question, options: Object.keys(q.criteria).map((name) => ({ name })) };
+		return { id, type: "choice", question, options: Object.entries(q.criteria).map(([name, criterion]) => ({ name: `${name} — ${criterion}` })) };
 	}
 	return { id, type: "score", question, levels: q.criteria };
 }
@@ -62,7 +62,8 @@ export function toPiAnswer(q: PiQuestion, a: WireAnswer): Record<string, unknown
 			probabilities[name] = a.probabilities?.[LETTERS[index]] ?? 0;
 		}
 		if (!a.choice) throw new Error("decisions API missing choice");
-		const choice = names.includes(a.choice) ? a.choice : names[LETTERS.indexOf(a.choice)];
+		const wireOptions = toWireQuestion("", q).options ?? [];
+		const choice = names.includes(a.choice) ? a.choice : names[wireOptions.findIndex((option, index) => a.choice === LETTERS[index] || a.choice === option.name)];
 		if (!choice) throw new Error("decisions API returned an unknown choice");
 		return { type: "choice", choice, probabilities, confidence: probabilities[choice] };
 	}
