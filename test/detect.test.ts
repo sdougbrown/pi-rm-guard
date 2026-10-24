@@ -20,6 +20,16 @@ test("routes recursive-force rm behind paths, prefixes, and pipes", () => {
 	assert.equal(mayDeleteForceRecursive("cat <<EOF\nrm -rf build\nEOF"), true);
 });
 
+test("routes recursive-force rm that a partial parser would miss", () => {
+	assert.equal(mayDeleteForceRecursive("rm -r $(x; echo y) -f"), true);
+	assert.equal(mayDeleteForceRecursive("rm -r a\\;b -f"), true);
+	assert.equal(mayDeleteForceRecursive("rm -r dir &> log -f"), true);
+	assert.equal(mayDeleteForceRecursive("rm -r 2>&1 -f"), true);
+	assert.equal(mayDeleteForceRecursive('rm -r "a&b" -f'), true);
+	assert.equal(mayDeleteForceRecursive("rm -r 'a;b' -f"), true);
+	assert.equal(mayDeleteForceRecursive("rm '-r' '-f' build"), true);
+});
+
 test("routes recursive-force rm with variable, glob, and outside-cwd targets", () => {
 	assert.equal(mayDeleteForceRecursive("rm -rf $BUILD_DIR"), true);
 	assert.equal(mayDeleteForceRecursive("rm -rf ${TMPDIR}/x"), true);
@@ -28,36 +38,27 @@ test("routes recursive-force rm with variable, glob, and outside-cwd targets", (
 	assert.equal(mayDeleteForceRecursive("rm -rf ../sibling/output"), true);
 });
 
+test("over-routes flag-like text near rm rather than missing a route", () => {
+	assert.equal(mayDeleteForceRecursive("rm -r x; rm -f y"), true);
+	assert.equal(mayDeleteForceRecursive("ls -rf; rm tmp"), true);
+	assert.equal(mayDeleteForceRecursive("rm -- -rf"), true);
+});
+
 test("does not route plain or partial-flag rm", () => {
 	assert.equal(mayDeleteForceRecursive("rm dist/foo.txt"), false);
 	assert.equal(mayDeleteForceRecursive("rm"), false);
 	assert.equal(mayDeleteForceRecursive("rm -f build.log"), false);
 	assert.equal(mayDeleteForceRecursive("rm -r dist"), false);
 	assert.equal(mayDeleteForceRecursive("rm -i notes.txt"), false);
-	assert.equal(mayDeleteForceRecursive("rm -- -rf"), false);
 	assert.equal(mayDeleteForceRecursive("rm ~/notes/old.txt"), false);
 	assert.equal(mayDeleteForceRecursive("git rm --cached config.json"), false);
 });
 
-test("does not route rm in other commands' flags or words", () => {
-	assert.equal(mayDeleteForceRecursive("ls -rf; rm tmp"), false);
+test("does not route rm in other commands' words", () => {
 	assert.equal(mayDeleteForceRecursive("grep -rf pattern src"), false);
 	assert.equal(mayDeleteForceRecursive("echo firmwarm confirm"), false);
 	assert.equal(mayDeleteForceRecursive("./rmtool --all"), false);
 	assert.equal(mayDeleteForceRecursive("echo 'run rm later'"), false);
-});
-
-test("routes flags separated by quoted paths, redirects, and quoting", () => {
-	assert.equal(mayDeleteForceRecursive('rm -r "a&b" -f'), true);
-	assert.equal(mayDeleteForceRecursive("rm -r 'a;b' -f"), true);
-	assert.equal(mayDeleteForceRecursive("rm -r 2>&1 -f"), true);
-	assert.equal(mayDeleteForceRecursive("rm '-r' '-f' build"), true);
-});
-
-test("does not combine flags across command boundaries", () => {
-	assert.equal(mayDeleteForceRecursive("rm -r x; rm -f y"), false);
-	assert.equal(mayDeleteForceRecursive("rm -r x && rm -f y"), false);
-	assert.equal(mayDeleteForceRecursive("rm -r x | rm -f y"), false);
 });
 
 test("passes commands without candidate rm text", () => {

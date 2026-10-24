@@ -1,13 +1,15 @@
 # Route possible rm commands
 
-Detection sends commands containing an `rm` token with both recursive and force
-flags — `rm -rf`, `rm -fr`, `rm -r -f`, `rm -Rf`, `rm --recursive --force`, and
-flags after paths — to the model; it never judges safety. This mirrors pi's
-built-in guard scope, so only commands pi would already halt can trigger a
-decision-model call. Plain `rm`, single-flag `rm`, and `git rm --cached` pass
-through unguarded, as they do without this extension. Quoted mentions of
-recursive-force rm still route. Detection is not a complete shell interpreter
-and does not promise to find obfuscated commands or external scripts.
+Detection routes commands whose text contains an `rm` token together with both
+recursive and force flags — `rm -rf`, `rm -fr`, `rm -r -f`, `rm -Rf`,
+`rm --recursive --force`, in any position — to the model; it never judges
+safety. Flag matching is lexical over the whole command text: quoted mentions
+of recursive-force rm route too, and a neighboring command's flags can
+over-route, which costs one model call and never a missed route. Plain `rm`,
+single-flag `rm`, and `git rm --cached` pass through unguarded — the same
+commands run unguarded without this extension. Detection is not a shell
+interpreter and does not promise to find obfuscated commands or external
+scripts.
 
 Run `../helpers/run-suite.sh` from its own directory, or use the full helper path
 from the repository root. Its `approve-var`, `approve-glob`, `approve-redirect`,
