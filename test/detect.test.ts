@@ -47,6 +47,19 @@ test("does not route rm in other commands' flags or words", () => {
 	assert.equal(mayDeleteForceRecursive("echo 'run rm later'"), false);
 });
 
+test("routes flags separated by quoted paths, redirects, and quoting", () => {
+	assert.equal(mayDeleteForceRecursive('rm -r "a&b" -f'), true);
+	assert.equal(mayDeleteForceRecursive("rm -r 'a;b' -f"), true);
+	assert.equal(mayDeleteForceRecursive("rm -r 2>&1 -f"), true);
+	assert.equal(mayDeleteForceRecursive("rm '-r' '-f' build"), true);
+});
+
+test("does not combine flags across command boundaries", () => {
+	assert.equal(mayDeleteForceRecursive("rm -r x; rm -f y"), false);
+	assert.equal(mayDeleteForceRecursive("rm -r x && rm -f y"), false);
+	assert.equal(mayDeleteForceRecursive("rm -r x | rm -f y"), false);
+});
+
 test("passes commands without candidate rm text", () => {
 	assert.equal(mayDeleteForceRecursive("ls -la"), false);
 	assert.equal(mayDeleteForceRecursive("npm test"), false);
