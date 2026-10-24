@@ -1,6 +1,6 @@
 {
   "name": "@dougbots/pi-rm-guard",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Pi extension: model-driven approval for rm cleanup commands",
   "type": "module",
   "keywords": [
