@@ -132,7 +132,7 @@ echo "evidence:  $CASE_DIR"
 # model-verdict entries.
 expectation_for() {
 	case "$1" in
-		approve|approve-auth|approve-var|approve-glob|approve-redirect|heredoc-bash|heredoc-sub|non-recursive|context)
+		approve|approve-auth|approve-var|approve-glob|approve-redirect|flag-split|heredoc-bash|heredoc-sub|context)
 			echo "DELETED|action=approve autoApproved=true|1" ;;
 		heredoc-quoted)
 			echo "SURVIVED|action=approve autoApproved=true|1" ;;
@@ -140,7 +140,7 @@ expectation_for() {
 		defer|low-conf) echo "SURVIVED|gate=model-ask autoApproved=false userRequests=+ evidence=+|1" ;;
 		model-error|malformed-model) echo "SURVIVED|gate=model-error autoApproved=false userRequests=+ evidence=+|1" ;;
 		invalid-backend) echo "SURVIVED|gate=model-error autoApproved=false userRequests=+ evidence=+|0" ;;
-		absent) echo "DELETED|absent|0" ;;
+		non-recursive|recursive-only|absent) echo "DELETED|absent|0" ;;
 		*)                echo "" ;;
 	esac
 }

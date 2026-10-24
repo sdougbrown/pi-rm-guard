@@ -15,10 +15,12 @@ RM_GUARD_VERIFY_SETUP_COMMAND="printf 'generated-fixture-%s: disposable build ar
 "$H/run-case.sh" approve-var 'CACHE="@VICTIM@"; rm -rf "$CACHE"' "$A"
 "$H/run-case.sh" approve-glob 'rm -rf "@VICTIM@"*' "$A"
 "$H/run-case.sh" approve-redirect 'rm -rf "@VICTIM@" 2>/dev/null' "$A"
+"$H/run-case.sh" flag-split 'rm -r -f "@VICTIM@"' "$A"
 "$H/run-case.sh" heredoc-bash $'bash <<\'EOF\'\nrm -rf "@VICTIM@"\nEOF' "$A"
 "$H/run-case.sh" heredoc-sub $'cat <<EOF\n$(rm -rf "@VICTIM@")\nEOF' "$A"
 "$H/run-case.sh" heredoc-quoted $'cat <<\'EOF\'\nrm -rf "@VICTIM@"\nEOF' "$A"
 "$H/run-case.sh" non-recursive 'rm "@VICTIM@/marker"' "$A"
+"$H/run-case.sh" recursive-only 'rm -r "@VICTIM@/marker"' "$A"
 "$H/run-case.sh" deny 'rm -rf "@VICTIM@"' "$C"
 "$H/run-case.sh" defer 'rm -rf "@VICTIM@"' "$B"
 "$H/run-case.sh" low-conf 'rm -rf "@VICTIM@"' '{"action":"A","probabilities":{"A":0.5,"B":0.49,"C":0.01}}'

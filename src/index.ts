@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClassifierBackend, createDecisionsBackend, type DecisionBackend, type DecisionOutcome } from "./backends.ts";
-import { mayInvokeRm } from "./detect.ts";
+import { mayDeleteForceRecursive } from "./detect.ts";
 import { registerDecisionsProvider } from "./decisions-provider.ts";
 
 export interface RmGuardConfig {
@@ -172,7 +172,7 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "bash") return undefined;
 		const command = event.input.command;
-		if (typeof command !== "string" || !mayInvokeRm(command)) return undefined;
+		if (typeof command !== "string" || !mayDeleteForceRecursive(command)) return undefined;
 
 		const { userRequests, evidence } = sessionContext(ctx);
 		const prompt = snippet(currentPrompt);

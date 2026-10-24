@@ -1,23 +1,28 @@
 # @dougbots/pi-rm-guard
 
 Let routine cleanup run without another approval dialog. This [pi](https://pi.dev)
-extension sends possible `rm` commands and session evidence to a decision model.
-The model judges whether to proceed, ask you, or deny the command.
+extension sends recursive-force `rm` commands and session evidence to a decision
+model. The model judges whether to proceed, ask you, or deny the command.
 
 ## How it works
 
-1. A small text detector routes possible `rm` calls, including variables, globs,
-   quoted mentions, scripts, and paths outside cwd. Commands without candidate
-   `rm` text pass through.
+1. A small text detector routes commands containing an `rm` token with both
+   recursive and force flags — `rm -rf`, `rm -fr`, `rm -r -f`, `rm -Rf`,
+   `rm --recursive --force`, in any position. Commands without that
+   combination pass through unguarded, as they do without this extension.
 2. The model receives the raw command, cwd, recent user requests, and bounded
    recent tool calls/results. No parser claims that deletion targets are verified.
 3. A confident approval runs the command. A confident denial blocks it. An ask,
    low confidence, or model error opens confirmation when a UI is available;
    otherwise it blocks.
 
-There are no static path allowlists, system-path denials, or literal-only
-eligibility rules. Non-recursive `rm` and harmless mentions can also reach the
-model. It decides whether the command is harmless or the cleanup is appropriate.
+There are no static path allowlists, literal-only matching, or shell parsing:
+flag matching is lexical over the whole command text. Split flags such as
+`rm -r -f` route just like `rm -rf`, quoted mentions of recursive-force rm
+still route, and a neighboring command's flags may over-route (one extra model
+call, never a missed route). Plain `rm` and single-flag `rm` pass through
+unguarded. The model decides whether a routed command is harmless or the
+cleanup is appropriate.
 
 **This is an autonomy aid, not a sandbox.** Detection does not interpret arbitrary
 shell programs or inspect external scripts. The model can make mistakes. Use OS

@@ -2,8 +2,10 @@
 
 ## Model-first contract
 
-The decision model owns deletion safety judgments. Detection only routes possible
-`rm` commands to the model with command and session evidence. Do not add static
+The decision model owns deletion safety judgments. Detection only routes
+recursive-force `rm` commands — an `rm` token with both recursive and force
+flags — to the model with command and session evidence. Plain and single-flag
+`rm` run unguarded, as they do without this extension. Do not add static
 path policies, shell emulation, interpreter lists, or deterministic safety verdicts.
 This extension reduces approval interruptions; it is not a sandbox.
 
