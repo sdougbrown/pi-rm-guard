@@ -1,8 +1,8 @@
 # @dougbots/pi-rm-guard
 
 Let routine cleanup run without another approval dialog. This [pi](https://pi.dev)
-extension sends possible `rm` commands and session evidence to a decision model.
-The model judges whether to proceed, ask you, or deny the command.
+extension sends recursive-force `rm` commands and session evidence to a decision
+model. The model judges whether to proceed, ask you, or deny the command.
 
 ## How it works
 

@@ -11,19 +11,26 @@
 const RM_TOKEN = /(^|[^A-Za-z0-9_-])rm(?![A-Za-z0-9_-])/;
 
 function isRecursive(token: string): boolean {
-	if (token.startsWith("--")) return token === "--recursive";
+	if (token.startsWith("--")) return isLongOption(token, "recursive");
 	return /[rR]/.test(token.replace(/^-+/, ""));
 }
 
 function isForce(token: string): boolean {
-	if (token.startsWith("--")) return token === "--force";
+	if (token.startsWith("--")) return isLongOption(token, "force");
 	return token.replace(/^-+/, "").includes("f");
+}
+
+/** GNU rm accepts unambiguous long-option prefixes, with an optional =value. */
+function isLongOption(token: string, name: string): boolean {
+	const given = token.slice(2).split("=", 1)[0];
+	return given.length > 0 && name.startsWith(given);
 }
 
 /**
  * True when the command text contains an rm token together with both recursive
- * and force flags (in any arrangement, anywhere in the text). Plain rm,
- * single-flag rm, and other commands pass through.
+ * and force flags (in any arrangement, anywhere in the text, including
+ * unambiguous long-option prefixes). Plain rm, single-flag rm, and other
+ * commands pass through.
  */
 export function mayDeleteForceRecursive(command: string): boolean {
 	if (!RM_TOKEN.test(command)) return false;

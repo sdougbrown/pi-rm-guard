@@ -1,4 +1,4 @@
-# Route possible rm commands
+# Route recursive-force rm commands
 
 Detection routes commands whose text contains an `rm` token together with both
 recursive and force flags — `rm -rf`, `rm -fr`, `rm -r -f`, `rm -Rf`,
