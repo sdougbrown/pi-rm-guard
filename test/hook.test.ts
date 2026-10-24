@@ -110,6 +110,7 @@ function harness(options: HarnessOptions) {
 		callTool: async (toolName: string, command: string) => {
 			return handlers.tool_call({ toolName, input: { command } }, ctx);
 		},
+		handlers,
 		appended,
 		stateCaptures,
 		notifyCalls,
@@ -145,6 +146,17 @@ test("decision input carries raw command, cwd, user requests, and session eviden
 	assert.ok(state.userRequests.includes("please clean up the build artifacts"), "includes branch user message");
 	assert.ok(state.evidence.some((e) => e.includes("du -sh node_modules")), "includes tool call");
 	assert.ok(state.evidence.some((e) => e.includes("2.1G node_modules")), "includes tool result");
+});
+
+test("custom-message runs carry no prompt; the last user prompt is kept", async () => {
+	const h = harness({ command: "rm -rf dist" });
+	await h.handlers.before_agent_start({ messageType: "user", prompt: "deploy the staging site" }, h.ctx);
+	// Runs started by pi.sendMessage({ triggerTurn: true }) fire before_agent_start
+	// with a message but no prompt (pi docs, extensions.md).
+	await h.handlers.before_agent_start({ messageType: "custom", message: { role: "user", content: "resume" } }, h.ctx);
+	await h.handlers.tool_call({ toolName: "bash", input: { command: "rm -rf dist" } }, h.ctx);
+	const state = h.stateCaptures[0];
+	assert.ok(state.userRequests.includes("deploy the staging site"), "keeps prior prompt");
 });
 
 test("a failing branch snapshot still delivers the raw command and current request to the model", async () => {

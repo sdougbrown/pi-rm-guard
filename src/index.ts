@@ -163,8 +163,10 @@ export function createRmGuard(pi: ExtensionAPI, getConfig: () => RmGuardConfig) 
 	// Capture the current request at agent start.
 	// It remains available even if the branch snapshot omits it.
 	let currentPrompt = "";
+	// Custom-message runs (pi.sendMessage with triggerTurn) carry no prompt:
+	// keep the last captured one rather than clearing it.
 	pi.on("before_agent_start", async (event) => {
-		currentPrompt = event.prompt.trim();
+		if (typeof event.prompt === "string") currentPrompt = event.prompt.trim();
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
