@@ -175,7 +175,7 @@ export function createClassifierBackend(
 			// that keeps only the message text. A contract violation must not look
 			// like a missing capability, so the marker re-derives the type here.
 			if (result.errorMessage?.startsWith(PROTOCOL_MARK)) {
-				throw new ProtocolError(result.errorMessage.slice(PROTOCOL_MARK.length + 1));
+				throw new ProtocolError(result.errorMessage.slice(PROTOCOL_MARK.length + 2));
 			}
 			throw new Error(result.errorMessage ?? "classifier returned no answer");
 		}

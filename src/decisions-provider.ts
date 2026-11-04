@@ -150,6 +150,7 @@ export type PiQuestion = PiChoiceQuestion | PiScoreQuestion | PiBoolQuestion;
  * question's verdict.
  */
 export function matchAnswers(questions: WireQuestion[], answers: WireAnswer[]): Map<string, WireAnswer> {
+	if (!Array.isArray(answers)) throw new ProtocolError("returned the answers keyed by name, not as a list");
 	const asked = new Set(questions.map((q) => q.name));
 	const byName = new Map<string, WireAnswer>();
 	for (const answer of answers) {

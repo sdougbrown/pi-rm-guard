@@ -357,6 +357,65 @@ test("the registry route escalates a contract violation in production shape", as
 	assert.equal(registryCalls, 1, "the boolean probe must not run on a contract violation");
 });
 
+test("a transient choice failure then a refused boolean probe escalates through the registry route", async (t) => {
+	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {
+		providerClassify = config.classifiers["decisions-v2"].classify;
+	} };
+	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"] });
+	assert.ok(providerClassify);
+	let httpCalls = 0;
+	t.mock.method(globalThis, "fetch", async () => {
+		httpCalls++;
+		// The choice probe rides out a transient failure; the boolean probe then
+		// meets an endpoint that refuses the request itself.
+		if (httpCalls === 1) return new Response("upstream hiccup", { status: 502 });
+		return new Response("old wire", { status: 422 });
+	});
+	const registry = {
+		findOfType: () => ({ id: "m" }),
+		classify: async (model: unknown, ctx: unknown) => {
+			try {
+				return await providerClassify!(model, ctx);
+			} catch (err) {
+				return { answers: {}, stopReason: "error", errorMessage: err instanceof Error ? err.message : String(err) };
+			}
+		},
+	};
+	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
+	const result = await backend.decide(input("rm -rf /"));
+	assert.ok("error" in result);
+	assert.equal(result.error, "decisions API: HTTP 422");
+	assert.equal(httpCalls, 2);
+});
+
+test("a keyed pre-OpenAI response escalates without a boolean re-probe", async (t) => {
+	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {
+		providerClassify = config.classifiers["decisions-v2"].classify;
+	} };
+	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"] });
+	assert.ok(providerClassify);
+	let registryCalls = 0;
+	const registry = {
+		findOfType: () => ({ id: "m" }),
+		classify: async (model: unknown, ctx: unknown) => {
+			registryCalls++;
+			try {
+				return await providerClassify!(model, ctx);
+			} catch (err) {
+				return { answers: {}, stopReason: "error", errorMessage: err instanceof Error ? err.message : String(err) };
+			}
+		},
+	};
+	t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ answers: { action: { choice: "A", probabilities: { A: 0.95 } } } })));
+	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
+	const result = await backend.decide(input("rm -rf /"));
+	assert.ok("error" in result);
+	assert.match(result.error, /keyed by name/);
+	assert.equal(registryCalls, 1, "the boolean probe must not run against a broken endpoint");
+});
+
 test("a transient 5xx still takes the boolean fallback on the registry route", async (t) => {
 	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
 	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {

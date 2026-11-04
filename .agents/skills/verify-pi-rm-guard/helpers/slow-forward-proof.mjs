@@ -9,7 +9,17 @@ const server = createServer((request, response) => {
 	request.on("end", () => {
 		setTimeout(() => {
 			response.setHeader("content-type", "application/json");
-			response.end(JSON.stringify({ answers: { action: { choice: "A", probabilities: { A: 0.95, B: 0.03, C: 0.02 } } } }));
+			response.end(JSON.stringify({ answers: [{
+				type: "choice",
+				name: "action",
+				choice: "approve",
+				confidence: 0.95,
+				probabilities: [
+					{ value: "approve", probability: 0.95 },
+					{ value: "ask", probability: 0.03 },
+					{ value: "deny", probability: 0.02 },
+				],
+			}] }));
 		}, 16_000);
 	});
 });

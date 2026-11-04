@@ -115,6 +115,17 @@ test("score answers without confidence use the winning level's probability", () 
 	}), { type: "score", score: 1.2, confidence: 0.6 });
 });
 
+test("a score with an unreported distribution reads zero confidence", () => {
+	assert.deepEqual(
+		toPiAnswer({ type: "score", instructions: "", criteria: ["none", "high"] }, { type: "score", score: 0.5, probabilities: [] }),
+		{ type: "score", score: 0.5, confidence: 0 },
+	);
+	assert.deepEqual(
+		toPiAnswer({ type: "score", instructions: "", criteria: ["none", "high"] }, { type: "score", score: 0.5 }),
+		{ type: "score", score: 0.5, confidence: 0 },
+	);
+});
+
 test("a score outside the levels, or an unvalidated number, is a contract violation", () => {
 	const q = { type: "score" as const, instructions: "", criteria: ["none", "high"] };
 	assert.throws(
