@@ -373,7 +373,16 @@ test("a transient 5xx still takes the boolean fallback on the registry route", a
 	});
 	const registry = {
 		findOfType: () => ({ id: "m" }),
-		classify: async (model: unknown, ctx: unknown) => providerClassify!(model, ctx),
+		// Flatten the way pi's registry does, so the marker re-derivation in
+		// classifyVia is on the path this test pins: a wording regression that
+		// puts a 5xx under the protocol marker would fail here.
+		classify: async (model: unknown, ctx: unknown) => {
+			try {
+				return await providerClassify!(model, ctx);
+			} catch (err) {
+				return { answers: {}, stopReason: "error", errorMessage: err instanceof Error ? err.message : String(err) };
+			}
+		},
 	};
 	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
 	assert.deepEqual(await backend.decide(input("rm -rf /")), { action: "approve", probability: 0.9, label: "approve" });
