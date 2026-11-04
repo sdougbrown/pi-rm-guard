@@ -55,8 +55,10 @@ blocked gate rather than substituting stub results.
 .agents/skills/verify-pi-rm-guard/helpers/run-case.sh <case> '<command>' '<decision-json>'
 ```
 
-`run-case.sh` creates a private agent directory and loads the extension explicitly
-with discovery disabled. It writes `rmGuard` settings into that directory and
+The decision JSON names its choice by position — `A` approve, `B` ask, `C` deny —
+with one probability per position; the stub answers in OpenAI's Decisions API
+shape. `run-case.sh` creates a private agent directory and loads the extension
+explicitly with discovery disabled. It writes `rmGuard` settings into that directory and
 clears inherited guard overrides. The coding-model stub issues the given command.
 Pi runs in print mode, where escalation blocks because there is no confirmation UI.
 Interactive confirmation is covered by the hook unit tests.

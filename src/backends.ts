@@ -2,7 +2,7 @@
  * Decision backends judge a raw command from session evidence.
  * Only valid model responses authorize execution; without one, errors escalate.
  */
-import { requestDecisions, resolveChoice, toWireQuestion } from "./decisions-provider.ts";
+import { requestDecisions, resolveChoice, toWireQuestion, type WireAnswer } from "./decisions-provider.ts";
 
 export interface DecisionInput {
 	/** The raw, unmodified command text — no parsing or target resolution. */
@@ -79,6 +79,15 @@ function isProbability(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
+/** The three-way answer's distribution, keyed by the values the criteria offered. */
+function probabilityByValue(answer: WireAnswer): Record<keyof typeof POLICY, number> {
+	const probabilities: Record<keyof typeof POLICY, number> = { approve: 0, ask: 0, deny: 0 };
+	for (const { value, probability } of answer.probabilities ?? []) {
+		if (value === "approve" || value === "ask" || value === "deny") probabilities[value] = probability;
+	}
+	return probabilities;
+}
+
 function choiceVerdict(probabilities: Record<"approve" | "ask" | "deny", number>, threshold: number, choice?: string): DecisionOutcome | { error: string } {
 	if (!Object.values(probabilities).every(isProbability)) return { error: "model returned invalid choice probabilities" };
 	if (!isProbability(threshold)) return { error: "invalid approval threshold" };
@@ -104,9 +113,13 @@ export function createDecisionsBackend(options: DecisionsBackendOptions): Decisi
 				const body = await requestDecisions({
 					...options, fetch: doFetch, input: buildDecisionsInput(input), questions: [ACTION_QUESTION],
 				});
-				const answer = body.answers?.action;
-				if (!answer?.probabilities || !answer.choice) return { error: "decision API missing probabilities" };
-				return choiceVerdict({ approve: answer.probabilities.A ?? 0, ask: answer.probabilities.B ?? 0, deny: answer.probabilities.C ?? 0 }, options.threshold ?? 0.85, answer.choice);
+				const answer = body.answers?.find((a) => a.name === "action") ?? body.answers?.[0];
+				if (!answer?.probabilities || answer.choice == null) return { error: "decision API missing probabilities and choice" };
+				return choiceVerdict(
+					probabilityByValue(answer),
+					options.threshold ?? 0.85,
+					typeof answer.choice === "string" ? answer.choice : undefined,
+				);
 			} catch (err) {
 				return { error: err instanceof Error ? err.message : String(err) };
 			}

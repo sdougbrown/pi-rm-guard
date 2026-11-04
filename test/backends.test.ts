@@ -6,13 +6,19 @@ import { toWireQuestion } from "../src/decisions-provider.ts";
 const choiceResponse = (approve: number, ask: number, deny: number) =>
 	new Response(
 		JSON.stringify({
-			answers: {
-				action: {
-					// /v1/decisions answers are keyed by positional letters
-					probabilities: { A: approve, B: ask, C: deny },
+			answers: [
+				{
+					type: "choice",
+					name: "action",
 					choice: approve >= ask && approve >= deny ? "approve" : deny >= ask ? "deny" : "ask",
+					confidence: Math.max(approve, ask, deny),
+					probabilities: [
+						{ value: "approve", probability: approve },
+						{ value: "ask", probability: ask },
+						{ value: "deny", probability: deny },
+					],
 				},
-			},
+			],
 		}),
 		{ status: 200, headers: { "content-type": "application/json" } },
 	);
@@ -36,7 +42,8 @@ test("both endpoint routes send identical decision state and questions", async (
 	});
 	await direct.decide(input());
 	await classifier.decide(input());
-	assert.deepEqual(directBody?.input, state);
+	// The Decisions API takes text, so the direct route sends the state as JSON text
+	assert.deepEqual(JSON.parse(String(directBody?.input)), state);
 	assert.ok(questions);
 	assert.deepEqual(directBody?.questions, [toWireQuestion("action", questions.action)]);
 	assert.equal(state?.command, input().command);
@@ -61,7 +68,7 @@ test("decisions backend maps the 3-way choice to approve/deny/defer", async () =
 	assert.equal(body.model, "test-model");
 	assert.equal(body.questions[0].type, "choice");
 	assert.equal(body.questions.length, 1);
-	assert.equal(body.input.command, "rm -rf dist");
+	assert.equal(JSON.parse(body.input).command, "rm -rf dist");
 
 	const deny = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.001, 0.001, 0.999) }).decide(input("rm -rf /"));
 	assert.deepEqual(deny, { action: "deny", probability: 0.999, label: "deny" });
@@ -112,7 +119,7 @@ test("decisions backend maps HTTP failures and bad bodies to errors", async () =
 		fetch: async () => new Response("{}", { status: 200 }),
 	});
 	assert.deepEqual(await malformed.decide(input()), {
-		error: "decision API missing probabilities",
+		error: "decision API missing probabilities and choice",
 	});
 });
 
@@ -250,14 +257,18 @@ test("a transient failure does not disable later three-way verdicts", async () =
 });
 
 test("backends reject malformed probabilities and honor the model's explicit choice", async () => {
-	for (const probabilities of [{ A: "1", B: 0, C: 0 }, { A: 1.1, B: 0, C: 0 }]) {
+	const malformed = [
+		[{ value: "approve", probability: "1" }, { value: "ask", probability: 0 }, { value: "deny", probability: 0 }],
+		[{ value: "approve", probability: 1.1 }, { value: "ask", probability: 0 }, { value: "deny", probability: 0 }],
+	];
+	for (const probabilities of malformed) {
 		const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
-			fetch: async () => new Response(JSON.stringify({ answers: { action: { choice: "approve", probabilities } } })),
+			fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities }] })),
 		});
 		assert.ok("error" in await backend.decide(input()));
 	}
 	const direct = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100, threshold: 0.5,
-		fetch: async () => new Response(JSON.stringify({ answers: { action: { choice: "deny", probabilities: { A: 0.51, B: 0, C: 0.49 } } } })),
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "deny", probabilities: [{ value: "approve", probability: 0.51 }, { value: "ask", probability: 0 }, { value: "deny", probability: 0.49 }] }] })),
 	});
 	assert.deepEqual(await direct.decide(input()), { action: "defer", probability: 0.49, label: "deny" });
 	const classifier = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, threshold: 0.5,
@@ -278,7 +289,7 @@ test("the decisions request aborts instead of accepting a late approval", async 
 
 test("decisions response with probabilities but no choice is an error, not argmax", async () => {
 	const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
-		fetch: async () => new Response(JSON.stringify({ answers: { action: { probabilities: { A: 1, B: 0, C: 0 } } } }),
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", probabilities: [{ value: "approve", probability: 1 }] }] }),
 			{ status: 200, headers: { "content-type": "application/json" } }),
 	});
 	const result = await backend.decide(input());
@@ -287,7 +298,7 @@ test("decisions response with probabilities but no choice is an error, not argma
 
 test("unknown choices cannot authorize execution through either backend", async () => {
 	const direct = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
-		fetch: async () => new Response(JSON.stringify({ answers: { action: { choice: "D", probabilities: { A: 0.99, B: 0.005, C: 0.005 } } } })),
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "D", probabilities: [{ value: "approve", probability: 0.99 }, { value: "ask", probability: 0.005 }, { value: "deny", probability: 0.005 }] }] })),
 	});
 	assert.ok("error" in await direct.decide(input()));
 	const classifier = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined,

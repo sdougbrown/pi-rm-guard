@@ -92,7 +92,7 @@ env -u RM_GUARD_BACKEND -u RM_GUARD_REGISTER_PROVIDER -u RM_GUARD_CLASSIFIER \
 	-u RM_GUARD_API_KEY -u RM_GUARD_JEV_KEY_FILE \
 RM_GUARD_API_KEY="${RM_GUARD_VERIFY_API_KEY:-}" \
 PI_CODING_AGENT_DIR="$CASE_DIR/agent" \
-pi -p --no-extensions -e "$REPO/src/index.ts" --no-mcp --offline --no-skills --no-prompt-templates \
+pi -p --no-extensions -e "$REPO/src/index.ts" --offline --no-skills --no-prompt-templates \
 	--session-dir "$CASE_DIR/sessions" "delete the build artifacts" \
 	> "$CASE_DIR/output.txt" 2>&1
 PI_EXIT=$?
