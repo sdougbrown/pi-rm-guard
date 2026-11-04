@@ -44,8 +44,10 @@ the reported distribution are all API errors, not a fabricated first-option
 verdict. A sparse distribution reads the unreported labels as zero, so the
 chosen label's own entry is the one that has to be there.
 Classifier fallback applies only to the current request, and only to a capability
-failure: a contract violation (a malformed answer, or the endpoint refusing the
-request) escalates, because the boolean probe would meet the same endpoint.
+failure or a transient one: a contract violation (a malformed answer, or the
+endpoint refusing the request) escalates, because the boolean probe would meet
+the same endpoint, while a rate limit, a request timeout, or a server failure
+rides the fallback out.
 A transient failure does not disable later three-way judgments; backend unit tests
 exercise recovery.
 A valid fallback approval can authorize execution after a failed choice probe;

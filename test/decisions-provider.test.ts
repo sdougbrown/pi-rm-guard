@@ -288,6 +288,17 @@ test("a request the endpoint refuses is a protocol error, so callers escalate", 
 			fetch: async () => new Response("old wire", { status: 422 }) }),
 		ProtocolError,
 	);
+	// A rate limit or a request timeout clears on its own: the fallback rides
+	// it out instead of the guard escalating on a healthy endpoint.
+	for (const status of [408, 429]) {
+		let err: Error | undefined;
+		try {
+			await requestDecisions({ url: "u", model: "m", input: "x", questions: [], timeoutMs: 1000,
+				fetch: async () => new Response("slow down", { status }) });
+		} catch (e) { err = e as Error; }
+		assert.equal(err instanceof ProtocolError, false, `HTTP ${status} is transient`);
+		assert.match(err?.message ?? "", new RegExp(`\\b${status}\\b`));
+	}
 	// A server failure may be transient; it is not a contract violation, and the
 	// message must stay out from under the protocol marker so the fallback that
 	// reads it does not mistake the two.
