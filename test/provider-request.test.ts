@@ -37,6 +37,16 @@ test("registered provider lets the configured deadline govern slow verdicts", as
 	}
 });
 
+test("registered provider refuses a value reported twice, as the direct route does", async (t) => {
+	const answer = { answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [
+		{ value: "approve", probability: 0.2 },
+		{ value: "approve", probability: 0.99 },
+		{ value: "ask", probability: 0.01 },
+	] }] };
+	t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify(answer)));
+	await assert.rejects(registeredProvider()({ id: "m" }, context), /reported approve twice/);
+});
+
 test("registered provider rejects a successful response missing the requested answer", async (t) => {
 	t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ answers: [] })));
 	await assert.rejects(registeredProvider()({ id: "m" }, context));

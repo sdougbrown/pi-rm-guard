@@ -2,7 +2,7 @@
  * Decision backends judge a raw command from session evidence.
  * Only valid model responses authorize execution; without one, errors escalate.
  */
-import { matchAnswers, requestDecisions, resolveChoice, toWireQuestion, type WireAnswer } from "./decisions-provider.ts";
+import { matchAnswers, requestDecisions, resolveChoice, toPiAnswer, toWireQuestion } from "./decisions-provider.ts";
 
 export interface DecisionInput {
 	/** The raw, unmodified command text — no parsing or target resolution. */
@@ -79,21 +79,6 @@ function isProbability(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
-/**
- * The reported distribution of the three-way answer, keyed by its values. A
- * value the endpoint repeats is an error: which of the two counts is not
- * something to guess at.
- */
-function probabilityByValue(answer: WireAnswer): Partial<Record<keyof typeof POLICY, number>> {
-	const reported: Partial<Record<keyof typeof POLICY, number>> = {};
-	for (const { value, probability } of answer.probabilities ?? []) {
-		if (value !== "approve" && value !== "ask" && value !== "deny") continue;
-		if (reported[value] !== undefined) throw new Error(`decisions API reported ${value} twice`);
-		reported[value] = probability;
-	}
-	return reported;
-}
-
 function choiceVerdict(probabilities: Record<"approve" | "ask" | "deny", number>, threshold: number, choice?: string): DecisionOutcome | { error: string } {
 	if (!Object.values(probabilities).every(isProbability)) return { error: "model returned invalid choice probabilities" };
 	if (!isProbability(threshold)) return { error: "invalid approval threshold" };
@@ -119,19 +104,16 @@ export function createDecisionsBackend(options: DecisionsBackendOptions): Decisi
 				const body = await requestDecisions({
 					...options, fetch: doFetch, input: buildDecisionsInput(input), questions: [ACTION_QUESTION],
 				});
-				const answer = matchAnswers([ACTION_QUESTION], body.answers ?? []).get("action");
-				if (!answer?.probabilities) return { error: "decision API missing probabilities" };
-				if (typeof answer.choice !== "string") return { error: "decision API missing choice" };
-				const reported = probabilityByValue(answer);
-				// The label that authorizes execution has to be the label the endpoint
-				// reported; an unreported one is a malformed answer, not a zero.
-				if (reported[answer.choice as keyof typeof POLICY] === undefined) {
-					return { error: `decision API reported no probability for ${answer.choice}` };
-				}
+				// matchAnswers refuses a question with no answer, so one question yields
+				// one answer. toPiAnswer is the shared reader: a repeated value, an
+				// unoffered choice or an unreported chosen label throws there, the same
+				// way it does for the registered provider.
+				const [answer] = matchAnswers([ACTION_QUESTION], body.answers ?? []).values();
+				const { choice, probabilities } = toPiAnswer(ACTION_SPEC, answer);
 				return choiceVerdict(
-					{ approve: reported.approve ?? 0, ask: reported.ask ?? 0, deny: reported.deny ?? 0 },
+					{ approve: probabilities.approve ?? 0, ask: probabilities.ask ?? 0, deny: probabilities.deny ?? 0 },
 					options.threshold ?? 0.85,
-					answer.choice,
+					choice,
 				);
 			} catch (err) {
 				return { error: err instanceof Error ? err.message : String(err) };

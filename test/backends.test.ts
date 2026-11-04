@@ -137,7 +137,7 @@ test("the label that authorizes execution must be a reported one", async () => {
 	const unreported = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
 		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [{ value: "ask", probability: 0.01 }, { value: "deny", probability: 0.01 }] }] })),
 	});
-	assert.deepEqual(await unreported.decide(input()), { error: "decision API reported no probability for approve" });
+	assert.deepEqual(await unreported.decide(input()), { error: "decisions API reported no probability for approve" });
 
 	// A sparse report is read as the unreported labels being zero, which is why
 	// the chosen label's own entry is the one that has to be there.
@@ -152,6 +152,18 @@ test("a value reported twice is an error, not a last-write verdict", async () =>
 		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [{ value: "approve", probability: 0.2 }, { value: "approve", probability: 0.99 }] }] })),
 	});
 	assert.deepEqual(await backend.decide(input()), { error: "decisions API reported approve twice" });
+});
+
+test("an unoffered value does not change the verdict", async () => {
+	const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [
+			{ value: "approve", probability: 0.96 },
+			{ value: "ask", probability: 0.03 },
+			{ value: "deny", probability: 0.005 },
+			{ value: "maybe", probability: 0.005 },
+		] }] })),
+	});
+	assert.deepEqual(await backend.decide(input()), { action: "approve", probability: 0.96, label: "approve" });
 });
 
 test("the direct route accepts an unnamed answer only for the question it asked", async () => {

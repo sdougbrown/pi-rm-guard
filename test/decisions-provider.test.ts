@@ -214,6 +214,38 @@ test("a repeated answer name is an error, not the last or first word", () => {
 	);
 });
 
+test("more unnamed answers than unanswered questions is an error", () => {
+	const questions = [
+		toWireQuestion("a", { type: "bool", instructions: "Is A?", criteria: { true: "yes", false: "no" } }),
+		toWireQuestion("b", { type: "bool", instructions: "Is B?", criteria: { true: "yes", false: "no" } }),
+	];
+	// An extra answer in the middle shifts every later positional binding.
+	assert.throws(
+		() => matchAnswers(questions, [
+			{ type: "predicate", probability: 0.1 },
+			{ type: "predicate", probability: 0.2 },
+			{ type: "predicate", probability: 0.3 },
+		]),
+		/3 unnamed answers for 2 questions/,
+	);
+	// Named answers fill their own questions, so the rest stay positional.
+	assert.equal(matchAnswers(questions, [
+		{ type: "predicate", name: "a", probability: 0.9 },
+		{ type: "predicate", probability: 0.2 },
+	]).get("b")?.probability, 0.2);
+});
+
+test("a repeated offered value is an error, not a last write", () => {
+	assert.throws(
+		() => toPiAnswer({ type: "choice", instructions: "", criteria: { build: "b", system: "s" } }, {
+			type: "choice",
+			choice: "build",
+			probabilities: [{ value: "build", probability: 0.2 }, { value: "build", probability: 0.9 }],
+		}),
+		/reported build twice/,
+	);
+});
+
 test("a question with no answer at all is an error", () => {
 	const questions = [
 		toWireQuestion("a", { type: "bool", instructions: "Is A?", criteria: { true: "yes", false: "no" } }),

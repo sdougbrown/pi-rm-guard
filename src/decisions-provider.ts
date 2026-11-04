@@ -89,10 +89,17 @@ export async function requestDecisions(options: {
 	return await response.json() as { answers?: WireAnswer[] };
 }
 
-type PiQuestion =
-	| { type: "choice"; instructions: string; criteria: Record<string, string> }
-	| { type: "score"; instructions: string; criteria: string[] }
-	| { type: "bool"; instructions: string; criteria: { true: string; false: string } };
+type PiChoiceAnswer = { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number };
+type PiScoreAnswer = { type: "score"; score: number; confidence: number };
+type PiBoolAnswer = { type: "bool"; probability: number };
+
+export type PiAnswer = PiChoiceAnswer | PiScoreAnswer | PiBoolAnswer;
+
+type PiChoiceQuestion = { type: "choice"; instructions: string; criteria: Record<string, string> };
+type PiScoreQuestion = { type: "score"; instructions: string; criteria: string[] };
+type PiBoolQuestion = { type: "bool"; instructions: string; criteria: { true: string; false: string } };
+
+type PiQuestion = PiChoiceQuestion | PiScoreQuestion | PiBoolQuestion;
 
 /**
  * Bind the answers to the questions asked. The API answers in question order and
@@ -110,6 +117,12 @@ export function matchAnswers(questions: WireQuestion[], answers: WireAnswer[]): 
 		byName.set(answer.name, answer);
 	}
 	const unnamed = answers.filter((answer) => answer.name == null);
+	// One answer per question: extra unnamed answers would shift every later
+	// positional binding onto the wrong question instead of being refused.
+	const unmatched = questions.length - byName.size;
+	if (unnamed.length > unmatched) {
+		throw new Error(`decisions API returned ${unnamed.length} unnamed answers for ${unmatched} questions`);
+	}
 	const matched = new Map<string, WireAnswer>();
 	let next = 0;
 	for (const question of questions) {
@@ -154,25 +167,39 @@ export function resolveChoice<Criteria extends Record<string, string>>(
 	return matched as (keyof Criteria & string) | undefined;
 }
 
-/** Decisions API answer -> pi classifier answer. */
-export function toPiAnswer(q: PiQuestion, a: WireAnswer) {
+/**
+ * Decisions API answer -> pi classifier answer. This is the one place a wire
+ * answer is read: a repeated value, a choice the question never offered and a
+ * chosen label with no reported probability are errors here, so every caller
+ * refuses the same malformed answer instead of each deciding for itself.
+ */
+export function toPiAnswer(q: PiChoiceQuestion, a: WireAnswer): PiChoiceAnswer;
+export function toPiAnswer(q: PiScoreQuestion, a: WireAnswer): PiScoreAnswer;
+export function toPiAnswer(q: PiBoolQuestion, a: WireAnswer): PiBoolAnswer;
+export function toPiAnswer(q: PiQuestion, a: WireAnswer): PiAnswer;
+export function toPiAnswer(q: PiQuestion, a: WireAnswer): PiAnswer {
 	if (q.type === "bool") {
-		return { type: "bool" as const, probability: typeof a.probability === "number" ? a.probability : 0 };
+		return { type: "bool", probability: typeof a.probability === "number" ? a.probability : 0 };
 	}
 	if (q.type === "choice") {
-		const names = Object.keys(q.criteria);
+		const offered = new Set(Object.keys(q.criteria));
 		const probabilities: Record<string, number> = {};
 		for (const { value, probability } of a.probabilities ?? []) {
-			if (typeof value === "string" && names.includes(value)) probabilities[value] = probability;
+			if (typeof value !== "string" || !offered.has(value)) continue;
+			if (value in probabilities) throw new Error(`decisions API reported ${value} twice`);
+			probabilities[value] = probability;
 		}
 		if (a.choice === undefined || a.choice === null) throw new Error("decisions API missing choice");
 		const choice = resolveChoice(q, a.choice);
 		if (!choice) throw new Error("decisions API returned an unknown choice");
-		return { type: "choice" as const, choice, probabilities, confidence: typeof a.confidence === "number" ? a.confidence : (probabilities[choice] ?? 0) };
+		// The label that authorizes an action has to be one the endpoint reported.
+		if (probabilities[choice] === undefined) throw new Error(`decisions API reported no probability for ${choice}`);
+		const confidence = typeof a.confidence === "number" ? a.confidence : probabilities[choice];
+		return { type: "choice", choice, probabilities, confidence };
 	}
 	const probabilities = a.probabilities ?? [];
 	const confidence = typeof a.confidence === "number" ? a.confidence : Math.max(...probabilities.map((p) => p.probability));
-	return { type: "score" as const, score: a.score ?? 0, confidence: Number.isFinite(confidence) ? confidence : 0 };
+	return { type: "score", score: a.score ?? 0, confidence: Number.isFinite(confidence) ? confidence : 0 };
 }
 
 export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsProviderOptions): void {
@@ -195,15 +222,13 @@ export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsPr
 			"decisions-v2": {
 				classify: async (model, context) => {
 					const asked = Object.entries(context.questions as Record<string, PiQuestion>);
+					const questions = asked.map(([id, q]) => toWireQuestion(id, q));
 					const body = await requestDecisions({
 						url: `${baseUrl}/decisions`, model: model.id, input: context.state,
-						questions: asked.map(([id, q]) => toWireQuestion(id, q)),
-						timeoutMs: options.timeoutMs ?? 10_000, apiKey: options.apiKey,
+						questions, timeoutMs: options.timeoutMs ?? 10_000, apiKey: options.apiKey,
 					});
-					// Answers echo the question's name; an endpoint that omits it is
-					// read positionally, since the API answers in question order.
-					const matched = matchAnswers(asked.map(([id, q]) => toWireQuestion(id, q)), body.answers ?? []);
-					const answers: Record<string, ReturnType<typeof toPiAnswer>> = {};
+					const matched = matchAnswers(questions, body.answers ?? []);
+					const answers: Record<string, PiAnswer> = {};
 					for (const [id, q] of asked) answers[id] = toPiAnswer(q, matched.get(id)!);
 					return { api: "decisions-v2", provider: "decisions", model: model.id, answers, stopReason: "stop" as const, timestamp: Date.now() };
 				},
