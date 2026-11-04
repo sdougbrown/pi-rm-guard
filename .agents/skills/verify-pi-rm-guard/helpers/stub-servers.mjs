@@ -92,6 +92,31 @@ const toAnswers = (decision) => [
 	},
 ];
 
+/**
+ * The guard must send OpenAI's Decisions request: text input, and questions that
+ * name themselves and instruct. Returning a problem means the stub answers 400,
+ * so a wire regression surfaces as a model error instead of a passing verdict.
+ */
+const requestProblem = (body) => {
+	if (typeof body !== "object" || body === null) return "body must be an object";
+	if (typeof body.input !== "string" && !Array.isArray(body.input)) return "input must be text or a message list";
+	if (!Array.isArray(body.questions) || body.questions.length === 0) return "questions must be a non-empty list";
+	for (const q of body.questions) {
+		if (typeof q?.name !== "string" || typeof q.instructions !== "string") return "a question needs a name and instructions";
+		if (q.type === "predicate") continue;
+		if (q.type === "choice") {
+			if (!Array.isArray(q.choices) || !q.choices.every((c) => c && "value" in c)) return "a choice question needs valued choices";
+			continue;
+		}
+		if (q.type === "score") {
+			if (!Array.isArray(q.levels) || !q.levels.every((l) => typeof l?.label === "string")) return "a score question needs labeled levels";
+			continue;
+		}
+		return `unknown question type ${JSON.stringify(q.type)}`;
+	}
+	return undefined;
+};
+
 const decisions = http.createServer((req, res) => {
 	if (req.method !== "POST" || req.url !== "/v1/decisions") {
 		res.writeHead(404).end();
@@ -104,6 +129,18 @@ const decisions = http.createServer((req, res) => {
 		const expectedKey = process.env.RM_GUARD_VERIFY_API_KEY;
 		if (expectedKey && req.headers.authorization !== `Bearer ${expectedKey}`) {
 			res.writeHead(401).end();
+			return;
+		}
+		let problem;
+		try {
+			problem = requestProblem(JSON.parse(body));
+		} catch {
+			problem = "body must be JSON";
+		}
+		if (problem) {
+			res.statusCode = 400;
+			res.setHeader("content-type", "application/json");
+			res.end(JSON.stringify({ error: `stub-servers: ${problem}` }));
 			return;
 		}
 		if (process.env.RM_GUARD_VERIFY_LIVE_URL && process.argv[3] !== "--selftest") {
@@ -203,7 +240,11 @@ if (process.argv[3] === "--selftest") {
 		const decRes = await fetch(`http://127.0.0.1:${decPort}/v1/decisions`, {
 			method: "POST",
 			headers: { "content-type": "application/json", ...(process.env.RM_GUARD_VERIFY_API_KEY ? { authorization: `Bearer ${process.env.RM_GUARD_VERIFY_API_KEY}` } : {}) },
-			body: JSON.stringify({ command: directive.command, intent: "selftest" }),
+			body: JSON.stringify({
+				model: "stub",
+				input: JSON.stringify({ command: directive.command }),
+				questions: [{ type: "choice", name: "action", instructions: "What should happen?", choices: [{ value: "approve", description: "harmless" }, { value: "deny", description: "destructive" }] }],
+			}),
 		});
 		if (!decRes.ok) fail(`decisions endpoint returned HTTP ${decRes.status}`);
 		const answer = (await decRes.json())?.answers?.[0];
@@ -213,6 +254,15 @@ if (process.argv[3] === "--selftest") {
 
 		const wrongRoute = await fetch(`http://127.0.0.1:${decPort}/v1/decisions/decisions`, { method: "POST" });
 		if (wrongRoute.status !== 404) fail("an invalid decisions route must not produce a verdict");
+
+		// A request in the pre-OpenAI shape (object input, id/question questions)
+		// must be refused, so the harness cannot pass a client on the old wire.
+		const oldWire = await fetch(`http://127.0.0.1:${decPort}/v1/decisions`, {
+			method: "POST",
+			headers: { "content-type": "application/json", ...(process.env.RM_GUARD_VERIFY_API_KEY ? { authorization: `Bearer ${process.env.RM_GUARD_VERIFY_API_KEY}` } : {}) },
+			body: JSON.stringify({ model: "stub", input: { command: directive.command }, questions: [{ id: "action", type: "yes_no", question: "?" }] }),
+		});
+		if (oldWire.status !== 400) fail(`a pre-OpenAI request must be refused, got HTTP ${oldWire.status}`);
 
 		console.log("selftest: OK");
 		process.exit(0);

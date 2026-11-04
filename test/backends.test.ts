@@ -119,8 +119,52 @@ test("decisions backend maps HTTP failures and bad bodies to errors", async () =
 		fetch: async () => new Response("{}", { status: 200 }),
 	});
 	assert.deepEqual(await malformed.decide(input()), {
-		error: "decision API missing probabilities and choice",
+		error: "decisions API missing answer for action",
 	});
+});
+
+test("a choice the criteria never offered is an error, including a non-string one", async () => {
+	for (const choice of [false, "unoffered", "A"]) {
+		const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+			fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice, confidence: 1, probabilities: [{ value: "approve", probability: 0.99 }, { value: "ask", probability: 0.005 }, { value: "deny", probability: 0.005 }] }] })),
+		});
+		const result = await backend.decide(input());
+		assert.ok("error" in result, `choice ${JSON.stringify(choice)} must not approve`);
+	}
+});
+
+test("the label that authorizes execution must be a reported one", async () => {
+	const unreported = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [{ value: "ask", probability: 0.01 }, { value: "deny", probability: 0.01 }] }] })),
+	});
+	assert.deepEqual(await unreported.decide(input()), { error: "decision API reported no probability for approve" });
+
+	// A sparse report is read as the unreported labels being zero, which is why
+	// the chosen label's own entry is the one that has to be there.
+	const sparse = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [{ value: "approve", probability: 0.99 }] }] })),
+	});
+	assert.deepEqual(await sparse.decide(input()), { action: "approve", probability: 0.99, label: "approve" });
+});
+
+test("a value reported twice is an error, not a last-write verdict", async () => {
+	const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [{ value: "approve", probability: 0.2 }, { value: "approve", probability: 0.99 }] }] })),
+	});
+	assert.deepEqual(await backend.decide(input()), { error: "decisions API reported approve twice" });
+});
+
+test("the direct route accepts an unnamed answer only for the question it asked", async () => {
+	const unnamed = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", choice: "approve", probabilities: [{ value: "approve", probability: 0.99 }, { value: "ask", probability: 0.005 }, { value: "deny", probability: 0.005 }] }] })),
+	});
+	assert.deepEqual(await unnamed.decide(input()), { action: "approve", probability: 0.99, label: "approve" });
+
+	const foreign = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "somethingelse", choice: "approve", probabilities: [{ value: "approve", probability: 0.99 }] }] })),
+	});
+	const result = await foreign.decide(input());
+	assert.ok("error" in result, "another question's answer must not approve");
 });
 
 test("decisions backend maps network failures to errors, not throws", async () => {

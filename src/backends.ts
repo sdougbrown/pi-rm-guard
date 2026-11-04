@@ -2,7 +2,7 @@
  * Decision backends judge a raw command from session evidence.
  * Only valid model responses authorize execution; without one, errors escalate.
  */
-import { requestDecisions, resolveChoice, toWireQuestion, type WireAnswer } from "./decisions-provider.ts";
+import { matchAnswers, requestDecisions, resolveChoice, toWireQuestion, type WireAnswer } from "./decisions-provider.ts";
 
 export interface DecisionInput {
 	/** The raw, unmodified command text — no parsing or target resolution. */
@@ -79,13 +79,19 @@ function isProbability(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
-/** The three-way answer's distribution, keyed by the values the criteria offered. */
-function probabilityByValue(answer: WireAnswer): Record<keyof typeof POLICY, number> {
-	const probabilities: Record<keyof typeof POLICY, number> = { approve: 0, ask: 0, deny: 0 };
+/**
+ * The reported distribution of the three-way answer, keyed by its values. A
+ * value the endpoint repeats is an error: which of the two counts is not
+ * something to guess at.
+ */
+function probabilityByValue(answer: WireAnswer): Partial<Record<keyof typeof POLICY, number>> {
+	const reported: Partial<Record<keyof typeof POLICY, number>> = {};
 	for (const { value, probability } of answer.probabilities ?? []) {
-		if (value === "approve" || value === "ask" || value === "deny") probabilities[value] = probability;
+		if (value !== "approve" && value !== "ask" && value !== "deny") continue;
+		if (reported[value] !== undefined) throw new Error(`decisions API reported ${value} twice`);
+		reported[value] = probability;
 	}
-	return probabilities;
+	return reported;
 }
 
 function choiceVerdict(probabilities: Record<"approve" | "ask" | "deny", number>, threshold: number, choice?: string): DecisionOutcome | { error: string } {
@@ -113,12 +119,19 @@ export function createDecisionsBackend(options: DecisionsBackendOptions): Decisi
 				const body = await requestDecisions({
 					...options, fetch: doFetch, input: buildDecisionsInput(input), questions: [ACTION_QUESTION],
 				});
-				const answer = body.answers?.find((a) => a.name === "action") ?? body.answers?.[0];
-				if (!answer?.probabilities || answer.choice == null) return { error: "decision API missing probabilities and choice" };
+				const answer = matchAnswers([ACTION_QUESTION], body.answers ?? []).get("action");
+				if (!answer?.probabilities) return { error: "decision API missing probabilities" };
+				if (typeof answer.choice !== "string") return { error: "decision API missing choice" };
+				const reported = probabilityByValue(answer);
+				// The label that authorizes execution has to be the label the endpoint
+				// reported; an unreported one is a malformed answer, not a zero.
+				if (reported[answer.choice as keyof typeof POLICY] === undefined) {
+					return { error: `decision API reported no probability for ${answer.choice}` };
+				}
 				return choiceVerdict(
-					probabilityByValue(answer),
+					{ approve: reported.approve ?? 0, ask: reported.ask ?? 0, deny: reported.deny ?? 0 },
 					options.threshold ?? 0.85,
-					typeof answer.choice === "string" ? answer.choice : undefined,
+					answer.choice,
 				);
 			} catch (err) {
 				return { error: err instanceof Error ? err.message : String(err) };

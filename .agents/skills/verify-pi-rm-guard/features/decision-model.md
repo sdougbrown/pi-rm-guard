@@ -37,8 +37,12 @@ stubbed verdicts as evidence that a real model makes useful judgments.
 Invalid probability values escalate as model errors. The model's explicit choice
 controls the verdict when provided; confidence determines whether to escalate it.
 A choice answer's value is matched to the criteria it was offered under and its
-confidence preserved; a missing or unoffered choice is an API error, not a
-fabricated first-option verdict.
+confidence preserved. An answer is bound to its question by the name it echoes,
+or by position when it names nothing; a name the request never asked, a name
+answered twice, a missing or unoffered choice, and a chosen label absent from
+the reported distribution are all API errors, not a fabricated first-option
+verdict. A sparse distribution reads the unreported labels as zero, so the
+chosen label's own entry is the one that has to be there.
 Classifier fallback applies only to the current request. A transient failure does
 not disable later three-way judgments; backend unit tests exercise recovery.
 A valid fallback approval can authorize execution after a failed choice probe;

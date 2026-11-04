@@ -94,6 +94,37 @@ type PiQuestion =
 	| { type: "score"; instructions: string; criteria: string[] }
 	| { type: "bool"; instructions: string; criteria: { true: string; false: string } };
 
+/**
+ * Bind the answers to the questions asked. The API answers in question order and
+ * echoes each question's name; an answer that names nothing is bound by
+ * position. A foreign name or a repeated name is an error, not another
+ * question's verdict.
+ */
+export function matchAnswers(questions: WireQuestion[], answers: WireAnswer[]): Map<string, WireAnswer> {
+	const asked = new Set(questions.map((q) => q.name));
+	const byName = new Map<string, WireAnswer>();
+	for (const answer of answers) {
+		if (typeof answer.name !== "string") continue;
+		if (!asked.has(answer.name)) throw new Error(`decisions API answered the unasked question ${JSON.stringify(answer.name)}`);
+		if (byName.has(answer.name)) throw new Error(`decisions API answered ${JSON.stringify(answer.name)} twice`);
+		byName.set(answer.name, answer);
+	}
+	const unnamed = answers.filter((answer) => answer.name == null);
+	const matched = new Map<string, WireAnswer>();
+	let next = 0;
+	for (const question of questions) {
+		const named = byName.get(question.name);
+		if (named) {
+			matched.set(question.name, named);
+			continue;
+		}
+		const positional = unnamed[next++];
+		if (!positional) throw new Error(`decisions API missing answer for ${question.name}`);
+		matched.set(question.name, positional);
+	}
+	return matched;
+}
+
 /** pi question -> Decisions API question. */
 export function toWireQuestion(id: string, q: PiQuestion): WireQuestion {
 	if (q.type === "bool") {
@@ -171,16 +202,9 @@ export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsPr
 					});
 					// Answers echo the question's name; an endpoint that omits it is
 					// read positionally, since the API answers in question order.
-					const byName = new Map<string, WireAnswer>();
-					for (const answer of body.answers ?? []) {
-						if (typeof answer.name === "string") byName.set(answer.name, answer);
-					}
+					const matched = matchAnswers(asked.map(([id, q]) => toWireQuestion(id, q)), body.answers ?? []);
 					const answers: Record<string, ReturnType<typeof toPiAnswer>> = {};
-					for (const [index, [id, q]] of asked.entries()) {
-						const wire = byName.get(id) ?? body.answers?.[index];
-						if (!wire) throw new Error(`decisions API missing answer for ${id}`);
-						answers[id] = toPiAnswer(q, wire);
-					}
+					for (const [id, q] of asked) answers[id] = toPiAnswer(q, matched.get(id)!);
 					return { api: "decisions-v2", provider: "decisions", model: model.id, answers, stopReason: "stop" as const, timestamp: Date.now() };
 				},
 			},
