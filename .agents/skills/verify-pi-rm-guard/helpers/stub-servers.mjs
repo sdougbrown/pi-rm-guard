@@ -7,8 +7,10 @@
  *    tool call (command taken from <stateDir>/directive.json), then replies
  *    "done" once the tool result arrives — a deterministic stand-in for the
  *    coding model;
- *  - a /v1/decisions endpoint answering the guard's action question from
- *    <stateDir>/decision.json — a deterministic stand-in for the decision model.
+ *  - a Decisions API (POST /v1/decisions) endpoint answering the guard's action
+ *    question from <stateDir>/decision.json — a deterministic stand-in for the
+ *    decision model. decision.json is fixture shorthand: its positional letters
+ *    (A approve, B ask, C deny) become the choice values the guard offers.
  *
  * Both request streams are appended to <stateDir>/chat-requests.jsonl and
  * <stateDir>/decisions-requests.jsonl as evidence.
@@ -71,6 +73,50 @@ const chat = http.createServer((req, res) => {
 	});
 });
 
+const DECISION_FILE = "decision.json";
+const DEFAULT_DECISION = { action: "A", probabilities: { A: 0.95, B: 0.03, C: 0.02 } };
+/** The guard offers these three choice values; fixtures name them by position. */
+const ACTION_VALUES = { A: "approve", B: "ask", C: "deny" };
+
+/** One choice answer in the Decisions API shape, from a fixture verdict. */
+const toAnswers = (decision) => [
+	{
+		type: "choice",
+		name: "action",
+		choice: ACTION_VALUES[decision.action] ?? decision.action,
+		confidence: decision.probabilities?.[decision.action],
+		probabilities: Object.entries(decision.probabilities ?? {}).map(([letter, probability]) => ({
+			value: ACTION_VALUES[letter] ?? letter,
+			probability,
+		})),
+	},
+];
+
+/**
+ * The guard must send OpenAI's Decisions request: text input, and questions that
+ * name themselves and instruct. Returning a problem means the stub answers 400,
+ * so a wire regression surfaces as a model error instead of a passing verdict.
+ */
+const requestProblem = (body) => {
+	if (typeof body !== "object" || body === null) return "body must be an object";
+	if (typeof body.input !== "string" && !Array.isArray(body.input)) return "input must be text or a message list";
+	if (!Array.isArray(body.questions) || body.questions.length === 0) return "questions must be a non-empty list";
+	for (const q of body.questions) {
+		if (typeof q?.name !== "string" || typeof q.instructions !== "string") return "a question needs a name and instructions";
+		if (q.type === "predicate") continue;
+		if (q.type === "choice") {
+			if (!Array.isArray(q.choices) || !q.choices.every((c) => c && "value" in c)) return "a choice question needs valued choices";
+			continue;
+		}
+		if (q.type === "score") {
+			if (!Array.isArray(q.levels) || !q.levels.every((l) => typeof l?.label === "string")) return "a score question needs labeled levels";
+			continue;
+		}
+		return `unknown question type ${JSON.stringify(q.type)}`;
+	}
+	return undefined;
+};
+
 const decisions = http.createServer((req, res) => {
 	if (req.method !== "POST" || req.url !== "/v1/decisions") {
 		res.writeHead(404).end();
@@ -83,6 +129,18 @@ const decisions = http.createServer((req, res) => {
 		const expectedKey = process.env.RM_GUARD_VERIFY_API_KEY;
 		if (expectedKey && req.headers.authorization !== `Bearer ${expectedKey}`) {
 			res.writeHead(401).end();
+			return;
+		}
+		let problem;
+		try {
+			problem = requestProblem(JSON.parse(body));
+		} catch {
+			problem = "body must be JSON";
+		}
+		if (problem) {
+			res.statusCode = 400;
+			res.setHeader("content-type", "application/json");
+			res.end(JSON.stringify({ error: `stub-servers: ${problem}` }));
 			return;
 		}
 		if (process.env.RM_GUARD_VERIFY_LIVE_URL && process.argv[3] !== "--selftest") {
@@ -106,18 +164,18 @@ const decisions = http.createServer((req, res) => {
 			}
 			return;
 		}
-		const DECISION_FILE = `${stateDir}/decision.json`;
+		const DECISION_FILE_PATH = `${stateDir}/${DECISION_FILE}`;
 		let decision;
 		try {
-			decision = JSON.parse(readFileSync(DECISION_FILE, "utf8"));
+			decision = JSON.parse(readFileSync(DECISION_FILE_PATH, "utf8"));
 		} catch (err) {
 			if (err.code === "ENOENT") {
 				// Absent file: fall back to the default verdict (approve), as before.
-				decision = { action: "A", probabilities: { A: 0.95, B: 0.03, C: 0.02 } };
+				decision = DEFAULT_DECISION;
 			} else {
 				// Present but unparseable: fail closed — 500 makes the guard record a
 				// model error and defer. A typo'd verdict must not silently approve.
-				const msg = `stub-servers: ${DECISION_FILE} is present but unparseable (${err.message}) — responding 500 so the guard defers`;
+				const msg = `stub-servers: ${DECISION_FILE_PATH} is present but unparseable (${err.message}) — responding 500 so the guard defers`;
 				console.error(msg);
 				try {
 					writeFileSync(`${stateDir}/decision-error.txt`, `${msg}\n${err.stack ?? ""}\n`);
@@ -129,7 +187,7 @@ const decisions = http.createServer((req, res) => {
 			}
 		}
 		res.setHeader("content-type", "application/json");
-		res.end(JSON.stringify({ answers: { action: { choice: decision.action, probabilities: decision.probabilities } } }));
+		res.end(JSON.stringify({ answers: toAnswers(decision) }));
 	});
 });
 
@@ -154,7 +212,7 @@ if (process.argv[3] === "--selftest") {
 	};
 	try {
 		const directive = { command: "rm -rf /tmp/rmguard-selftest-victim" };
-		const decision = { action: "A", probabilities: { A: 0.95, B: 0.03, C: 0.02 } };
+		const decision = DEFAULT_DECISION;
 		writeFileSync(`${stateDir}/directive.json`, JSON.stringify(directive));
 		writeFileSync(`${stateDir}/decision.json`, JSON.stringify(decision));
 
@@ -177,20 +235,34 @@ if (process.argv[3] === "--selftest") {
 		if (!command) fail("no bash tool call with arguments in the SSE stream");
 		if (command !== directive.command) fail(`tool call command ${JSON.stringify(command)} != directive ${JSON.stringify(directive.command)}`);
 
-		// Decisions endpoint: response must be {answers:{action:{choice,probabilities}}}
-		// echoing the known decision.json.
+		// Decisions endpoint: response must be one choice answer in OpenAI's shape,
+		// echoing the known decision.json under the guard's own choice values.
 		const decRes = await fetch(`http://127.0.0.1:${decPort}/v1/decisions`, {
 			method: "POST",
 			headers: { "content-type": "application/json", ...(process.env.RM_GUARD_VERIFY_API_KEY ? { authorization: `Bearer ${process.env.RM_GUARD_VERIFY_API_KEY}` } : {}) },
-			body: JSON.stringify({ command: directive.command, intent: "selftest" }),
+			body: JSON.stringify({
+				model: "stub",
+				input: JSON.stringify({ command: directive.command }),
+				questions: [{ type: "choice", name: "action", instructions: "What should happen?", choices: [{ value: "approve", description: "harmless" }, { value: "deny", description: "destructive" }] }],
+			}),
 		});
 		if (!decRes.ok) fail(`decisions endpoint returned HTTP ${decRes.status}`);
-		const answer = (await decRes.json())?.answers?.action;
-		if (!answer || answer.choice !== decision.action || JSON.stringify(answer.probabilities) !== JSON.stringify(decision.probabilities))
+		const answer = (await decRes.json())?.answers?.[0];
+		const want = toAnswers(decision)[0];
+		if (JSON.stringify(answer) !== JSON.stringify(want))
 			fail(`decisions response does not echo decision.json: ${JSON.stringify(answer)}`);
 
 		const wrongRoute = await fetch(`http://127.0.0.1:${decPort}/v1/decisions/decisions`, { method: "POST" });
 		if (wrongRoute.status !== 404) fail("an invalid decisions route must not produce a verdict");
+
+		// A request in the pre-OpenAI shape (object input, id/question questions)
+		// must be refused, so the harness cannot pass a client on the old wire.
+		const oldWire = await fetch(`http://127.0.0.1:${decPort}/v1/decisions`, {
+			method: "POST",
+			headers: { "content-type": "application/json", ...(process.env.RM_GUARD_VERIFY_API_KEY ? { authorization: `Bearer ${process.env.RM_GUARD_VERIFY_API_KEY}` } : {}) },
+			body: JSON.stringify({ model: "stub", input: { command: directive.command }, questions: [{ id: "action", type: "yes_no", question: "?" }] }),
+		});
+		if (oldWire.status !== 400) fail(`a pre-OpenAI request must be refused, got HTTP ${oldWire.status}`);
 
 		console.log("selftest: OK");
 		process.exit(0);

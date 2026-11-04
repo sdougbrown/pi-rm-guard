@@ -14,7 +14,7 @@ test("both endpoint routes authenticate to the same protected service", async (t
 				return;
 			}
 			response.setHeader("content-type", "application/json");
-			response.end(JSON.stringify({ answers: { action: { choice: "A", probabilities: { A: 0.99, B: 0.005, C: 0.005 } } } }));
+			response.end(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", confidence: 0.99, probabilities: [{ value: "approve", probability: 0.99 }, { value: "ask", probability: 0.005 }, { value: "deny", probability: 0.005 }] }] }));
 		});
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -29,7 +29,7 @@ test("both endpoint routes authenticate to the same protected service", async (t
 		assert.equal("action" in result ? result.action : "error", apiKey === token ? "approve" : "error");
 		let classify: Classify | undefined;
 		const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: Classify }> }) {
-			classify = config.classifiers["decisions-v1"].classify;
+			classify = config.classifiers["decisions-v2"].classify;
 		} };
 		registerDecisionsProvider(pi as never, { baseUrl, models: ["m"], apiKey });
 		assert.ok(classify);

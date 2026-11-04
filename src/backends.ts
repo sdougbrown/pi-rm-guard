@@ -2,7 +2,7 @@
  * Decision backends judge a raw command from session evidence.
  * Only valid model responses authorize execution; without one, errors escalate.
  */
-import { requestDecisions, resolveChoice, toWireQuestion } from "./decisions-provider.ts";
+import { matchAnswers, ProtocolError, PROTOCOL_MARK, requestDecisions, resolveChoice, toPiAnswer, toWireQuestion } from "./decisions-provider.ts";
 
 export interface DecisionInput {
 	/** The raw, unmodified command text — no parsing or target resolution. */
@@ -104,9 +104,17 @@ export function createDecisionsBackend(options: DecisionsBackendOptions): Decisi
 				const body = await requestDecisions({
 					...options, fetch: doFetch, input: buildDecisionsInput(input), questions: [ACTION_QUESTION],
 				});
-				const answer = body.answers?.action;
-				if (!answer?.probabilities || !answer.choice) return { error: "decision API missing probabilities" };
-				return choiceVerdict({ approve: answer.probabilities.A ?? 0, ask: answer.probabilities.B ?? 0, deny: answer.probabilities.C ?? 0 }, options.threshold ?? 0.85, answer.choice);
+				// matchAnswers refuses a question with no answer, so one question yields
+				// one answer. toPiAnswer is the shared reader: a repeated value, an
+				// unoffered choice or an unreported chosen label throws there, the same
+				// way it does for the registered provider.
+				const [answer] = matchAnswers([ACTION_QUESTION], body.answers ?? []).values();
+				const { choice, probabilities } = toPiAnswer(ACTION_SPEC, answer);
+				return choiceVerdict(
+					{ approve: probabilities.approve ?? 0, ask: probabilities.ask ?? 0, deny: probabilities.deny ?? 0 },
+					options.threshold ?? 0.85,
+					choice,
+				);
 			} catch (err) {
 				return { error: err instanceof Error ? err.message : String(err) };
 			}
@@ -163,6 +171,12 @@ export function createClassifierBackend(
 		if (!model) throw new Error(`classifier model ${options.provider}/${options.modelId} not in catalog`);
 		const result = await modelRegistry.classify(model, { state, questions }, options.apiKey ? { apiKey: options.apiKey } : undefined);
 		if (!result.answers || Object.keys(result.answers).length === 0) {
+			// pi's registry flattens a thrown provider error into an error result
+			// that keeps only the message text. A contract violation must not look
+			// like a missing capability, so the marker re-derives the type here.
+			if (result.errorMessage?.startsWith(PROTOCOL_MARK)) {
+				throw new ProtocolError(result.errorMessage.slice(PROTOCOL_MARK.length + 1));
+			}
 			throw new Error(result.errorMessage ?? "classifier returned no answer");
 		}
 		return result.answers;
@@ -194,6 +208,10 @@ export function createClassifierBackend(
 					answers = unwrapAnswers(await classifyBounded(state, questionsFor(mode)));
 				} catch (err) {
 					if (err === timeoutError) return { error: timeoutError.message };
+					// A contract violation is not a missing capability: the endpoint
+					// would break the bool probe too, so it escalates rather than
+					// retrying with a question whose answer could approve.
+					if (err instanceof ProtocolError) throw err;
 					// A failed request does not establish a permanent model capability.
 					mode = "bool";
 					answers = unwrapAnswers(await classifyBounded(state, questionsFor(mode)));

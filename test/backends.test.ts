@@ -1,18 +1,24 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { createClassifierBackend, createDecisionsBackend, type DecisionInput } from "../src/backends.ts";
-import { toWireQuestion } from "../src/decisions-provider.ts";
+import { ProtocolError, PROTOCOL_MARK, registerDecisionsProvider, toWireQuestion } from "../src/decisions-provider.ts";
 
 const choiceResponse = (approve: number, ask: number, deny: number) =>
 	new Response(
 		JSON.stringify({
-			answers: {
-				action: {
-					// /v1/decisions answers are keyed by positional letters
-					probabilities: { A: approve, B: ask, C: deny },
+			answers: [
+				{
+					type: "choice",
+					name: "action",
 					choice: approve >= ask && approve >= deny ? "approve" : deny >= ask ? "deny" : "ask",
+					confidence: Math.max(approve, ask, deny),
+					probabilities: [
+						{ value: "approve", probability: approve },
+						{ value: "ask", probability: ask },
+						{ value: "deny", probability: deny },
+					],
 				},
-			},
+			],
 		}),
 		{ status: 200, headers: { "content-type": "application/json" } },
 	);
@@ -36,7 +42,8 @@ test("both endpoint routes send identical decision state and questions", async (
 	});
 	await direct.decide(input());
 	await classifier.decide(input());
-	assert.deepEqual(directBody?.input, state);
+	// The Decisions API takes text, so the direct route sends the state as JSON text
+	assert.deepEqual(JSON.parse(String(directBody?.input)), state);
 	assert.ok(questions);
 	assert.deepEqual(directBody?.questions, [toWireQuestion("action", questions.action)]);
 	assert.equal(state?.command, input().command);
@@ -61,7 +68,7 @@ test("decisions backend maps the 3-way choice to approve/deny/defer", async () =
 	assert.equal(body.model, "test-model");
 	assert.equal(body.questions[0].type, "choice");
 	assert.equal(body.questions.length, 1);
-	assert.equal(body.input.command, "rm -rf dist");
+	assert.equal(JSON.parse(body.input).command, "rm -rf dist");
 
 	const deny = await createDecisionsBackend({ url: "u", model: "m", timeoutMs: 1, fetch: async () => choiceResponse(0.001, 0.001, 0.999) }).decide(input("rm -rf /"));
 	assert.deepEqual(deny, { action: "deny", probability: 0.999, label: "deny" });
@@ -112,8 +119,53 @@ test("decisions backend maps HTTP failures and bad bodies to errors", async () =
 		fetch: async () => new Response("{}", { status: 200 }),
 	});
 	assert.deepEqual(await malformed.decide(input()), {
-		error: "decision API missing probabilities",
+		error: "decisions API: no answer for action",
 	});
+});
+
+test("a choice the criteria never offered is an error, including a non-string one", async () => {
+	for (const choice of [false, "unoffered", "A"]) {
+		const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+			fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice, confidence: 1, probabilities: [{ value: "approve", probability: 0.99 }, { value: "ask", probability: 0.005 }, { value: "deny", probability: 0.005 }] }] })),
+		});
+		const result = await backend.decide(input());
+		assert.ok("error" in result, `choice ${JSON.stringify(choice)} must not approve`);
+	}
+});
+
+test("the label that authorizes execution must be a reported one", async () => {
+	const unreported = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [{ value: "ask", probability: 0.01 }, { value: "deny", probability: 0.01 }] }] })),
+	});
+	assert.deepEqual(await unreported.decide(input()), { error: "decisions API: reported no probability for approve" });
+
+	// A sparse report is read as the unreported labels being zero, which is why
+	// the chosen label's own entry is the one that has to be there.
+	const sparse = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [{ value: "approve", probability: 0.99 }] }] })),
+	});
+	assert.deepEqual(await sparse.decide(input()), { action: "approve", probability: 0.99, label: "approve" });
+});
+
+test("a value reported twice is an error, not a last-write verdict", async () => {
+	const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [{ value: "approve", probability: 0.2 }, { value: "approve", probability: 0.99 }] }] })),
+	});
+	assert.deepEqual(await backend.decide(input()), { error: "decisions API: reported approve twice" });
+});
+
+
+test("the direct route accepts an unnamed answer only for the question it asked", async () => {
+	const unnamed = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", choice: "approve", probabilities: [{ value: "approve", probability: 0.99 }, { value: "ask", probability: 0.005 }, { value: "deny", probability: 0.005 }] }] })),
+	});
+	assert.deepEqual(await unnamed.decide(input()), { action: "approve", probability: 0.99, label: "approve" });
+
+	const foreign = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "somethingelse", choice: "approve", probabilities: [{ value: "approve", probability: 0.99 }] }] })),
+	});
+	const result = await foreign.decide(input());
+	assert.ok("error" in result, "another question's answer must not approve");
 });
 
 test("decisions backend maps network failures to errors, not throws", async () => {
@@ -250,20 +302,152 @@ test("a transient failure does not disable later three-way verdicts", async () =
 });
 
 test("backends reject malformed probabilities and honor the model's explicit choice", async () => {
-	for (const probabilities of [{ A: "1", B: 0, C: 0 }, { A: 1.1, B: 0, C: 0 }]) {
+	const malformed = [
+		[{ value: "approve", probability: "1" }, { value: "ask", probability: 0 }, { value: "deny", probability: 0 }],
+		[{ value: "approve", probability: 1.1 }, { value: "ask", probability: 0 }, { value: "deny", probability: 0 }],
+	];
+	for (const probabilities of malformed) {
 		const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
-			fetch: async () => new Response(JSON.stringify({ answers: { action: { choice: "approve", probabilities } } })),
+			fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities }] })),
 		});
 		assert.ok("error" in await backend.decide(input()));
 	}
 	const direct = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100, threshold: 0.5,
-		fetch: async () => new Response(JSON.stringify({ answers: { action: { choice: "deny", probabilities: { A: 0.51, B: 0, C: 0.49 } } } })),
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "deny", probabilities: [{ value: "approve", probability: 0.51 }, { value: "ask", probability: 0 }, { value: "deny", probability: 0.49 }] }] })),
 	});
 	assert.deepEqual(await direct.decide(input()), { action: "defer", probability: 0.49, label: "deny" });
 	const classifier = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined, threshold: 0.5,
 		classify: async () => ({ answers: { action: { choice: "deny", probabilities: { approve: 0.51, ask: 0, deny: 0.49 } } } }),
 	});
 	assert.deepEqual(await classifier.decide(input()), { action: "defer", probability: 0.49, label: "deny" });
+});
+
+test("the registry route escalates a contract violation in production shape", async (t) => {
+	// In production the provider's classify runs behind pi's model registry,
+	// which flattens a thrown error into an error result that keeps only the
+	// message text. Emulate that around the real provider and assert the guard
+	// still escalates instead of falling back to the boolean probe.
+	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {
+		providerClassify = config.classifiers["decisions-v2"].classify;
+	} };
+	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"] });
+	assert.ok(providerClassify);
+	let registryCalls = 0;
+	const registry = {
+		findOfType: () => ({ id: "m" }),
+		classify: async (model: unknown, ctx: unknown) => {
+			registryCalls++;
+			try {
+				return await providerClassify!(model, ctx);
+			} catch (err) {
+				return { answers: {}, stopReason: "error", errorMessage: err instanceof Error ? err.message : String(err) };
+			}
+		},
+	};
+	t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [
+		{ value: "approve", probability: 0.2 },
+		{ value: "approve", probability: 0.99 },
+		{ value: "ask", probability: 0.01 },
+	] }] })));
+	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
+	const result = await backend.decide(input("rm -rf /"));
+	assert.ok("error" in result);
+	assert.match(result.error, /reported approve twice/);
+	assert.equal(registryCalls, 1, "the boolean probe must not run on a contract violation");
+});
+
+test("a transient 5xx still takes the boolean fallback on the registry route", async (t) => {
+	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {
+		providerClassify = config.classifiers["decisions-v2"].classify;
+	} };
+	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"] });
+	assert.ok(providerClassify);
+	let httpCalls = 0;
+	t.mock.method(globalThis, "fetch", async () => {
+		httpCalls++;
+		// One transient failure, then the endpoint answers the boolean probe.
+		if (httpCalls === 1) return new Response("upstream hiccup", { status: 502 });
+		return new Response(JSON.stringify({ answers: [{ type: "predicate", name: "safe", probability: 0.9 }] }));
+	});
+	const registry = {
+		findOfType: () => ({ id: "m" }),
+		// Flatten the way pi's registry does, so the marker re-derivation in
+		// classifyVia is on the path this test pins: a wording regression that
+		// puts a 5xx under the protocol marker would fail here.
+		classify: async (model: unknown, ctx: unknown) => {
+			try {
+				return await providerClassify!(model, ctx);
+			} catch (err) {
+				return { answers: {}, stopReason: "error", errorMessage: err instanceof Error ? err.message : String(err) };
+			}
+		},
+	};
+	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
+	assert.deepEqual(await backend.decide(input("rm -rf /")), { action: "approve", probability: 0.9, label: "approve" });
+	assert.equal(httpCalls, 2, "the boolean probe must run after a transient failure");
+});
+
+test("a rate limit is transient: the fallback rides it out on the registry route", async (t) => {
+	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {
+		providerClassify = config.classifiers["decisions-v2"].classify;
+	} };
+	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"] });
+	assert.ok(providerClassify);
+	let httpCalls = 0;
+	t.mock.method(globalThis, "fetch", async () => {
+		httpCalls++;
+		// One rate-limited response, then the endpoint answers the boolean probe.
+		if (httpCalls === 1) return new Response("slow down", { status: 429 });
+		return new Response(JSON.stringify({ answers: [{ type: "predicate", name: "safe", probability: 0.9 }] }));
+	});
+	const registry = {
+		findOfType: () => ({ id: "m" }),
+		classify: async (model: unknown, ctx: unknown) => {
+			try {
+				return await providerClassify!(model, ctx);
+			} catch (err) {
+				return { answers: {}, stopReason: "error", errorMessage: err instanceof Error ? err.message : String(err) };
+			}
+		},
+	};
+	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
+	assert.deepEqual(await backend.decide(input("rm -rf /")), { action: "approve", probability: 0.9, label: "approve" });
+	assert.equal(httpCalls, 2, "the boolean probe must run after a rate limit");
+});
+
+test("a contract violation on the boolean probe escalates rather than crashing the guard", async () => {
+	let boolCalls = 0;
+	const backend = createClassifierBackend(fakeRegistry(), { provider: "typesafe", modelId: "j", apiKey: undefined,
+		classify: async (_state, questions) => {
+			if ("action" in (questions as Record<string, unknown>)) throw new Error("choice unsupported");
+			boolCalls++;
+			throw new ProtocolError("HTTP 422");
+		},
+	});
+	const result = await backend.decide(input("rm -rf /"));
+	assert.ok("error" in result);
+	assert.match(result.error, /HTTP 422/);
+	assert.equal(boolCalls, 1);
+});
+
+test("a protocol error on the choice probe escalates instead of re-probing with the bool question", async () => {
+	let calls = 0;
+	const backend = createClassifierBackend(fakeRegistry(), { provider: "decisions", modelId: "j", apiKey: undefined,
+		classify: async (_state, questions) => {
+			calls++;
+			if ("action" in (questions as Record<string, unknown>)) {
+				throw new ProtocolError("decisions API reported approve twice");
+			}
+			return { answers: { safe: { probability: 0.9 } }, stopReason: "stop" };
+		},
+	});
+	const result = await backend.decide(input("rm -rf /"));
+	assert.ok("error" in result);
+	assert.match(result.error, /reported approve twice/);
+	assert.equal(calls, 1, "the bool probe must not run on a contract violation");
 });
 
 test("the decisions request aborts instead of accepting a late approval", async () => {
@@ -278,7 +462,7 @@ test("the decisions request aborts instead of accepting a late approval", async 
 
 test("decisions response with probabilities but no choice is an error, not argmax", async () => {
 	const backend = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
-		fetch: async () => new Response(JSON.stringify({ answers: { action: { probabilities: { A: 1, B: 0, C: 0 } } } }),
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", probabilities: [{ value: "approve", probability: 1 }] }] }),
 			{ status: 200, headers: { "content-type": "application/json" } }),
 	});
 	const result = await backend.decide(input());
@@ -287,7 +471,7 @@ test("decisions response with probabilities but no choice is an error, not argma
 
 test("unknown choices cannot authorize execution through either backend", async () => {
 	const direct = createDecisionsBackend({ url: "u", model: "m", timeoutMs: 100,
-		fetch: async () => new Response(JSON.stringify({ answers: { action: { choice: "D", probabilities: { A: 0.99, B: 0.005, C: 0.005 } } } })),
+		fetch: async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "D", probabilities: [{ value: "approve", probability: 0.99 }, { value: "ask", probability: 0.005 }, { value: "deny", probability: 0.005 }] }] })),
 	});
 	assert.ok("error" in await direct.decide(input()));
 	const classifier = createJevBackend(fakeRegistry(), { modelId: "j", apiKey: undefined,

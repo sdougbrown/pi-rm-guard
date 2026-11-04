@@ -7,7 +7,7 @@ type Classify = (model: { id: string }, context: { state: unknown; questions: Re
 function registeredProvider(timeoutMs?: number): Classify {
 	let classify: Classify | undefined;
 	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: Classify }> }) {
-		classify = config.classifiers["decisions-v1"].classify;
+		classify = config.classifiers["decisions-v2"].classify;
 	} };
 	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"], timeoutMs });
 	assert.ok(classify);
@@ -25,7 +25,7 @@ test("registered provider lets the configured deadline govern slow verdicts", as
 	});
 	t.mock.method(globalThis, "fetch", (_url: unknown, init: RequestInit) => new Promise<Response>((resolve, reject) => {
 		init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-		setTimeout(() => resolve(new Response(JSON.stringify({ answers: { action: { choice: "A", probabilities: { A: 1, B: 0 } } } }))), 15_000);
+		setTimeout(() => resolve(new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", confidence: 1, probabilities: [{ value: "approve", probability: 1 }, { value: "ask", probability: 0 }] }] }))), 15_000);
 	}));
 	for (const timeoutMs of [20_000, 5_000]) {
 		const pending = registeredProvider(timeoutMs)({ id: "m" }, context);
@@ -37,7 +37,17 @@ test("registered provider lets the configured deadline govern slow verdicts", as
 	}
 });
 
+test("registered provider refuses a value reported twice, as the direct route does", async (t) => {
+	const answer = { answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [
+		{ value: "approve", probability: 0.2 },
+		{ value: "approve", probability: 0.99 },
+		{ value: "ask", probability: 0.01 },
+	] }] };
+	t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify(answer)));
+	await assert.rejects(registeredProvider()({ id: "m" }, context), /reported approve twice/);
+});
+
 test("registered provider rejects a successful response missing the requested answer", async (t) => {
-	t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ answers: {} })));
+	t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ answers: [] })));
 	await assert.rejects(registeredProvider()({ id: "m" }, context));
 });

@@ -3,15 +3,17 @@
 The model judges the whole command from its text, cwd, recent user requests,
 and bounded recent tool evidence. No static target list is presented as verified.
 Direct and registered-provider requests use the same HTTP client, structured
-state, question encoder, and choice-label decoder. `RM_GUARD_API_KEY` supplies an
+state, question encoder, and valued-choice decoder; both speak OpenAI's Decisions
+API, so structured state reaches the model as JSON text. `RM_GUARD_API_KEY` supplies an
 optional Bearer token on both routes; protected-service tests cover missing,
 incorrect, and valid tokens. The standalone live eval forwards the token too. The decision stub rejects incorrect endpoint
 paths, so real-pi cases also check URL construction during valid provider setup.
 Each case loads the default export in real pi with `registerProvider: true`.
 Classifier cases use the real registry; skipping registration cannot produce
 the expected request and verdict.
-One per-label criteria definition supplies choice options, classifier
-criteria, and boolean fallback criteria. A unit test compares both wire payloads.
+One per-label criteria definition supplies the choice values and descriptions,
+the classifier criteria, and the boolean fallback criteria. A unit test compares
+both wire payloads.
 
 The `context` case in `../helpers/run-suite.sh` supplies a prior tool result whose
 text does not appear verbatim in the setup command. It checks that result, cwd,
@@ -34,10 +36,20 @@ stubbed verdicts as evidence that a real model makes useful judgments.
 
 Invalid probability values escalate as model errors. The model's explicit choice
 controls the verdict when provided; confidence determines whether to escalate it.
-Registered providers normalize letter choices to names and preserve confidence;
-a missing choice is an API error, not a fabricated first-option verdict.
-Classifier fallback applies only to the current request. A transient failure does
-not disable later three-way judgments; backend unit tests exercise recovery.
+A choice answer's value is matched to the criteria it was offered under and its
+confidence preserved. An answer is bound to its question by the name it echoes,
+or by position when it names nothing; a name the request never asked, a name
+answered twice, a missing or unoffered choice, and a chosen label absent from
+the reported distribution are all API errors, not a fabricated first-option
+verdict. A sparse distribution reads the unreported labels as zero, so the
+chosen label's own entry is the one that has to be there.
+Classifier fallback applies only to the current request, and only to a capability
+failure or a transient one: a contract violation (a malformed answer, or the
+endpoint refusing the request) escalates, because the boolean probe would meet
+the same endpoint, while a rate limit, a request timeout, or a server failure
+rides the fallback out.
+A transient failure does not disable later three-way judgments; backend unit tests
+exercise recovery.
 A valid fallback approval can authorize execution after a failed choice probe;
 the failure itself never supplies permission.
 If the branch snapshot fails, the current request and raw command still reach

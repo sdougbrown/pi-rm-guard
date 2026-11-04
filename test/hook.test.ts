@@ -285,7 +285,12 @@ test("tool calls keep their order in the model evidence", async () => {
 test("the decisions route honors configured thresholds and request timeouts", async (t) => {
 	let delayed = false;
 	const server = createServer((_request, response) => {
-		const send = () => response.end(JSON.stringify({ answers: { action: { choice: "approve", probabilities: { A: 0.9, B: 0.08, C: 0.02 } } } }));
+		const send = () => response.end(JSON.stringify({
+			answers: [{
+				type: "choice", name: "action", choice: "approve", confidence: 0.9,
+				probabilities: [{ value: "approve", probability: 0.9 }, { value: "ask", probability: 0.08 }, { value: "deny", probability: 0.02 }],
+			}],
+		}));
 		if (delayed) setTimeout(send, 40); else send();
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -295,6 +300,10 @@ test("the decisions route honors configured thresholds and request timeouts", as
 	const options = { command: "rm -rf dist", backend: "decisions" as const, decisionsUrl: `http://127.0.0.1:${address.port}/v1/decisions`, hasUI: false };
 	const threshold = harness({ ...options, threshold: 0.95 });
 	assert.equal((await threshold.decide() as { block: boolean }).block, true);
+	// The same verdict approves under a threshold it clears, so the block above
+	// is the comparison and not an error path.
+	const permissive = harness({ ...options, threshold: 0.8 });
+	assert.equal(await permissive.decide(), undefined);
 	delayed = true;
 	const timeout = harness({ ...options, timeoutMs: 5 });
 	assert.equal((await timeout.decide() as { block: boolean }).block, true);

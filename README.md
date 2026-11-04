@@ -50,6 +50,11 @@ in global or project pi settings:
 }
 ```
 
+`url` must serve OpenAI's Decisions API (`POST /v1/decisions`, the schema
+`client.decisions.create` sends) on a model with a chat template: text `input`,
+`predicate`/`choice`/`score` questions, and answers listed in question order.
+Structured state reaches the model as JSON text.
+
 Set `backend` to `decisions` to call that endpoint directly instead.
 Direct requests and the registered `decisions` provider share state and question
 encoding. Other pi-known classifier models use `provider/model-id`, such as
