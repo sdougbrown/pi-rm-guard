@@ -88,7 +88,7 @@ export async function requestDecisions(options: {
 	if (!response.ok) {
 		// A 4xx refuses the request itself, so no other question would fare
 		// better; a 5xx may be transient.
-		if (response.status < 500) throw new ProtocolError(`decisions API ${response.status}`);
+		if (response.status < 500) throw new ProtocolError(`HTTP ${response.status}`);
 		throw new Error(`decisions API ${response.status}`);
 	}
 	return await response.json() as { answers?: WireAnswer[] };
@@ -99,19 +99,45 @@ type PiScoreAnswer = { type: "score"; score: number; confidence: number };
 type PiBoolAnswer = { type: "bool"; probability: number };
 
 export type PiAnswer = PiChoiceAnswer | PiScoreAnswer | PiBoolAnswer;
+// A choice answer's confidence is the endpoint's when it reports one, and the
+// chosen label's share of the distribution when it does not; the two are not
+// distinguishable downstream.
+
+/**
+ * The marker every ProtocolError message begins with. The registered provider's
+ * classify runs behind pi's model registry, which flattens a thrown error into
+ * an error result that keeps only the message text, so the classifier route
+ * re-derives the type from this prefix.
+ */
+export const PROTOCOL_MARK = "decisions API";
 
 /**
  * A response that violates the Decisions contract: a malformed answer, or a
  * request the endpoint refused. Retrying with a different question cannot fix
  * it, so callers must escalate instead of falling back.
  */
-export class ProtocolError extends Error {}
+export class ProtocolError extends Error {
+	constructor(message: string) {
+		super(`${PROTOCOL_MARK}: ${message}`);
+	}
+}
+
+/**
+ * Every number handed to a caller is a real probability: a string or an
+ * out-of-range value would coerce into a verdict downstream.
+ */
+function reported(what: string, value: unknown): number {
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+		throw new ProtocolError(`reported ${what} as ${JSON.stringify(value)}`);
+	}
+	return value;
+}
 
 type PiChoiceQuestion = { type: "choice"; instructions: string; criteria: Record<string, string> };
 type PiScoreQuestion = { type: "score"; instructions: string; criteria: string[] };
 type PiBoolQuestion = { type: "bool"; instructions: string; criteria: { true: string; false: string } };
 
-type PiQuestion = PiChoiceQuestion | PiScoreQuestion | PiBoolQuestion;
+export type PiQuestion = PiChoiceQuestion | PiScoreQuestion | PiBoolQuestion;
 
 /**
  * Bind the answers to the questions asked. The API answers in question order and
@@ -124,11 +150,11 @@ export function matchAnswers(questions: WireQuestion[], answers: WireAnswer[]): 
 	const byName = new Map<string, WireAnswer>();
 	for (const answer of answers) {
 		if (answer.name != null && typeof answer.name !== "string") {
-			throw new ProtocolError(`decisions API answered with a non-string name: ${JSON.stringify(answer.name)}`);
+			throw new ProtocolError(`answered with a non-string name: ${JSON.stringify(answer.name)}`);
 		}
 		if (typeof answer.name !== "string") continue;
-		if (!asked.has(answer.name)) throw new Error(`decisions API answered the unasked question ${JSON.stringify(answer.name)}`);
-		if (byName.has(answer.name)) throw new Error(`decisions API answered ${JSON.stringify(answer.name)} twice`);
+		if (!asked.has(answer.name)) throw new ProtocolError(`answered the unasked question ${JSON.stringify(answer.name)}`);
+		if (byName.has(answer.name)) throw new ProtocolError(`answered ${JSON.stringify(answer.name)} twice`);
 		byName.set(answer.name, answer);
 	}
 	const unnamed = answers.filter((answer) => answer.name == null);
@@ -136,7 +162,7 @@ export function matchAnswers(questions: WireQuestion[], answers: WireAnswer[]): 
 	// positional binding onto the wrong question instead of being refused.
 	const unmatched = questions.length - byName.size;
 	if (unnamed.length > unmatched) {
-		throw new Error(`decisions API returned ${unnamed.length} unnamed answers for ${unmatched} questions`);
+		throw new ProtocolError(`returned ${unnamed.length} unnamed answers for ${unmatched} questions`);
 	}
 	const matched = new Map<string, WireAnswer>();
 	let next = 0;
@@ -147,7 +173,7 @@ export function matchAnswers(questions: WireQuestion[], answers: WireAnswer[]): 
 			continue;
 		}
 		const positional = unnamed[next++];
-		if (!positional) throw new Error(`decisions API missing answer for ${question.name}`);
+		if (!positional) throw new ProtocolError(`no answer for ${question.name}`);
 		matched.set(question.name, positional);
 	}
 	return matched;
@@ -194,37 +220,37 @@ export function toPiAnswer(q: PiBoolQuestion, a: WireAnswer): PiBoolAnswer;
 export function toPiAnswer(q: PiQuestion, a: WireAnswer): PiAnswer;
 export function toPiAnswer(q: PiQuestion, a: WireAnswer): PiAnswer {
 	if (q.type === "bool") {
-		return { type: "bool", probability: typeof a.probability === "number" ? a.probability : 0 };
+		return { type: "bool", probability: reported("the probability of true", a.probability) };
 	}
 	if (q.type === "choice") {
-		// Every number handed to a caller is a real probability: a string or an
-		// out-of-range value would coerce into a verdict downstream.
-		const reported = (what: string, value: unknown): number => {
-			if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
-				throw new ProtocolError(`decisions API reported ${what} as ${JSON.stringify(value)}`);
-			}
-			return value;
-		};
 		const offered = new Set(Object.keys(q.criteria));
 		const probabilities: Record<string, number> = {};
 		for (const { value, probability } of a.probabilities ?? []) {
 			if (typeof value !== "string" || !offered.has(value)) continue;
-			if (value in probabilities) throw new ProtocolError(`decisions API reported ${value} twice`);
+			if (value in probabilities) throw new ProtocolError(`reported ${value} twice`);
 			probabilities[value] = reported(`the probability of ${value}`, probability);
 		}
-		if (a.choice === undefined || a.choice === null) throw new ProtocolError("decisions API missing choice");
+		if (a.choice === undefined || a.choice === null) throw new ProtocolError("missing choice");
 		const choice = resolveChoice(q, a.choice);
-		if (!choice) throw new ProtocolError("decisions API returned an unknown choice");
+		if (!choice) throw new ProtocolError("returned an unknown choice");
 		// The label that authorizes an action has to be one the endpoint reported.
-		if (probabilities[choice] === undefined) {
-			throw new ProtocolError(`decisions API reported no probability for ${choice}`);
-		}
+		if (probabilities[choice] === undefined) throw new ProtocolError(`reported no probability for ${choice}`);
 		const confidence = typeof a.confidence === "number" ? reported("confidence", a.confidence) : probabilities[choice];
 		return { type: "choice", choice, probabilities, confidence };
 	}
-	const probabilities = a.probabilities ?? [];
-	const confidence = typeof a.confidence === "number" ? a.confidence : Math.max(...probabilities.map((p) => p.probability));
-	return { type: "score", score: a.score ?? 0, confidence: Number.isFinite(confidence) ? confidence : 0 };
+	const distribution = a.probabilities ?? [];
+	const confidence = typeof a.confidence === "number"
+		? reported("confidence", a.confidence)
+		: Math.max(...distribution.map((p) => reported(`the probability of level ${JSON.stringify(p.value)}`, p.probability)));
+	// A score is the probability-weighted mean level index, so it spans the
+	// levels rather than the [0,1] a probability is bound to.
+	if (typeof a.score !== "number" || !Number.isFinite(a.score)) {
+		throw new ProtocolError(`reported the score as ${JSON.stringify(a.score ?? null)}`);
+	}
+	if (a.score < 0 || a.score > q.criteria.length - 1) {
+		throw new ProtocolError(`reported the score ${a.score} outside the ${q.criteria.length} levels`);
+	}
+	return { type: "score", score: a.score, confidence: Number.isFinite(confidence) ? confidence : 0 };
 }
 
 export function registerDecisionsProvider(pi: ExtensionAPI, options: DecisionsProviderOptions): void {

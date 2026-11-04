@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { matchAnswers, ProtocolError, requestDecisions, toPiAnswer, toWireQuestion } from "../src/decisions-provider.ts";
+import { matchAnswers, ProtocolError, PROTOCOL_MARK, requestDecisions, toPiAnswer, toWireQuestion } from "../src/decisions-provider.ts";
+import type { PiQuestion, WireAnswer } from "../src/decisions-provider.ts";
 
 test("bool questions map to predicate with criteria in the instructions", () => {
 	const wire = toWireQuestion("safe", {
@@ -89,28 +90,51 @@ test("unknown choices are not fabricated from the first option", () => {
 });
 
 test("score answers carry the reported score and confidence", () => {
-	assert.deepEqual(toPiAnswer({ type: "score", instructions: "", criteria: ["none", "high"] }, {
+	assert.deepEqual(toPiAnswer({ type: "score", instructions: "", criteria: ["none", "some", "high"] }, {
 		type: "score",
 		name: "risk",
 		score: 1.4,
 		confidence: 0.8,
 		probabilities: [
 			{ value: 0, label: "none", probability: 0.2 },
-			{ value: 1, label: "high", probability: 0.8 },
+			{ value: 1, label: "some", probability: 0.3 },
+			{ value: 2, label: "high", probability: 0.5 },
 		],
 	}), { type: "score", score: 1.4, confidence: 0.8 });
 });
 
 test("score answers without confidence use the winning level's probability", () => {
-	assert.deepEqual(toPiAnswer({ type: "score", instructions: "", criteria: ["none", "high"] }, {
+	assert.deepEqual(toPiAnswer({ type: "score", instructions: "", criteria: ["none", "some", "high"] }, {
 		type: "score",
 		score: 1.2,
 		probabilities: [
 			{ value: 0, label: "none", probability: 0.2 },
-			{ value: 1, label: "high", probability: 0.6 },
-			{ value: 2, label: "certain", probability: 0.2 },
+			{ value: 1, label: "some", probability: 0.6 },
+			{ value: 2, label: "high", probability: 0.2 },
 		],
 	}), { type: "score", score: 1.2, confidence: 0.6 });
+});
+
+test("a score outside the levels, or an unvalidated number, is a contract violation", () => {
+	const q = { type: "score" as const, instructions: "", criteria: ["none", "high"] };
+	assert.throws(
+		() => toPiAnswer(q, { type: "score", score: 1.4, probabilities: [{ value: 0, label: "none", probability: 1 }] }),
+		/score 1.4 outside the 2 levels/,
+	);
+	assert.throws(
+		() => toPiAnswer(q, { type: "score", score: 0.5, confidence: 7, probabilities: [{ value: 0, label: "none", probability: 1 }] }),
+		/reported confidence as 7/,
+	);
+	assert.throws(
+		() => toPiAnswer(q, { type: "score", score: 0.5, probabilities: [{ value: 0, label: "none", probability: "1" } as never] }),
+		/reported the probability of level 0 as "1"/,
+	);
+	// A level absent from the distribution reads as zero mass, not an error:
+	// only the numbers the fallback reads are validated.
+	assert.deepEqual(
+		toPiAnswer(q, { type: "score", score: 0.5, confidence: 0.5, probabilities: [{ value: 0, label: "none", probability: 1 }] }),
+		{ type: "score", score: 0.5, confidence: 0.5 },
+	);
 });
 
 test("requests carry text input, the questions, and the endpoint token", async () => {
@@ -226,7 +250,7 @@ test("more unnamed answers than unanswered questions is an error", () => {
 			{ type: "predicate", probability: 0.2 },
 			{ type: "predicate", probability: 0.3 },
 		]),
-		/3 unnamed answers for 2 questions/,
+		/returned 3 unnamed answers for 2 questions/,
 	);
 	// Named answers fill their own questions, so the rest stay positional.
 	assert.equal(matchAnswers(questions, [
@@ -290,7 +314,7 @@ test("a question with no answer at all is an error", () => {
 		toWireQuestion("a", { type: "bool", instructions: "Is A?", criteria: { true: "yes", false: "no" } }),
 		toWireQuestion("b", { type: "bool", instructions: "Is B?", criteria: { true: "yes", false: "no" } }),
 	];
-	assert.throws(() => matchAnswers(questions, [{ type: "predicate", name: "a", probability: 0.9 }]), /missing answer for b/);
+	assert.throws(() => matchAnswers(questions, [{ type: "predicate", name: "a", probability: 0.9 }]), /no answer for b/);
 });
 
 test("reported confidence wins over the distribution it disagrees with", () => {
@@ -310,22 +334,23 @@ test("reported confidence wins over the distribution it disagrees with", () => {
 
 test("malformed answers never invent a confident verdict", () => {
 	const boolQ = { type: "bool" as const, instructions: "", criteria: { true: "yes", false: "no" } };
+	const choiceQ = { type: "choice" as const, instructions: "", criteria: { build: "b", system: "s" } };
 	const scoreQ = { type: "score" as const, instructions: "", criteria: ["none", "high"] };
-	cases: for (const [label, q, a] of [
-		["predicate without a number", boolQ, { type: "predicate", probability: "0.99" }],
-		["predicate without a probability", boolQ, { type: "predicate" }],
-		["null choice", { type: "choice" as const, instructions: "", criteria: { build: "b" } }, { type: "choice", choice: null, probabilities: [{ value: "build", probability: 1 }] }],
-		["score without a number", scoreQ, { type: "score", probabilities: [{ value: 0, label: "none", probability: 1 }] }],
-	] as [string, Parameters<typeof toPiAnswer>[0], Parameters<typeof toPiAnswer>[1]][]) {
-		let answer;
+	const cases: [string, PiQuestion, WireAnswer, RegExp][] = [
+		["predicate without a number", boolQ, { type: "predicate", probability: "0.99" } as unknown as WireAnswer, /probability of true as "0\.99"/],
+		["predicate without a probability", boolQ, { type: "predicate" }, /probability of true as undefined/],
+		["null choice", choiceQ, { type: "choice", choice: null, probabilities: [{ value: "build", probability: 1 }] } as unknown as WireAnswer, /missing choice/],
+		["score without a number", scoreQ, { type: "score", probabilities: [{ value: 0, label: "none", probability: 1 }] }, /the score as null/],
+	];
+	for (const [label, q, answer, message] of cases) {
+		assert.throws(() => toPiAnswer(q, answer), ProtocolError, `${label} must escalate`);
+		let thrown: unknown;
 		try {
-			answer = toPiAnswer(q, a);
+			toPiAnswer(q, answer);
 		} catch (err) {
-			assert.match(String(err), /missing choice/, label);
-			continue cases;
+			thrown = err;
 		}
-		const confidence = "probability" in answer ? answer.probability : answer.confidence;
-		assert.equal(Number.isFinite(confidence), true, `${label} must report a finite number`);
+		assert.match((thrown as Error).message, message, label);
 	}
 });
 
