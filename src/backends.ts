@@ -2,7 +2,7 @@
  * Decision backends judge a raw command from session evidence.
  * Only valid model responses authorize execution; without one, errors escalate.
  */
-import { matchAnswers, requestDecisions, resolveChoice, toPiAnswer, toWireQuestion } from "./decisions-provider.ts";
+import { matchAnswers, ProtocolError, requestDecisions, resolveChoice, toPiAnswer, toWireQuestion } from "./decisions-provider.ts";
 
 export interface DecisionInput {
 	/** The raw, unmodified command text — no parsing or target resolution. */
@@ -202,6 +202,10 @@ export function createClassifierBackend(
 					answers = unwrapAnswers(await classifyBounded(state, questionsFor(mode)));
 				} catch (err) {
 					if (err === timeoutError) return { error: timeoutError.message };
+					// A contract violation is not a missing capability: the endpoint
+					// would break the bool probe too, so it escalates rather than
+					// retrying with a question whose answer could approve.
+					if (err instanceof ProtocolError) throw err;
 					// A failed request does not establish a permanent model capability.
 					mode = "bool";
 					answers = unwrapAnswers(await classifyBounded(state, questionsFor(mode)));

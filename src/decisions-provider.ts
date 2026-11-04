@@ -85,7 +85,12 @@ export async function requestDecisions(options: {
 		body: JSON.stringify({ model: options.model, input: wireInput(options.input), questions: options.questions }),
 		signal: AbortSignal.timeout(options.timeoutMs),
 	});
-	if (!response.ok) throw new Error(`decisions API ${response.status}`);
+	if (!response.ok) {
+		// A 4xx refuses the request itself, so no other question would fare
+		// better; a 5xx may be transient.
+		if (response.status < 500) throw new ProtocolError(`decisions API ${response.status}`);
+		throw new Error(`decisions API ${response.status}`);
+	}
 	return await response.json() as { answers?: WireAnswer[] };
 }
 
@@ -94,6 +99,13 @@ type PiScoreAnswer = { type: "score"; score: number; confidence: number };
 type PiBoolAnswer = { type: "bool"; probability: number };
 
 export type PiAnswer = PiChoiceAnswer | PiScoreAnswer | PiBoolAnswer;
+
+/**
+ * A response that violates the Decisions contract: a malformed answer, or a
+ * request the endpoint refused. Retrying with a different question cannot fix
+ * it, so callers must escalate instead of falling back.
+ */
+export class ProtocolError extends Error {}
 
 type PiChoiceQuestion = { type: "choice"; instructions: string; criteria: Record<string, string> };
 type PiScoreQuestion = { type: "score"; instructions: string; criteria: string[] };
@@ -111,6 +123,9 @@ export function matchAnswers(questions: WireQuestion[], answers: WireAnswer[]): 
 	const asked = new Set(questions.map((q) => q.name));
 	const byName = new Map<string, WireAnswer>();
 	for (const answer of answers) {
+		if (answer.name != null && typeof answer.name !== "string") {
+			throw new ProtocolError(`decisions API answered with a non-string name: ${JSON.stringify(answer.name)}`);
+		}
 		if (typeof answer.name !== "string") continue;
 		if (!asked.has(answer.name)) throw new Error(`decisions API answered the unasked question ${JSON.stringify(answer.name)}`);
 		if (byName.has(answer.name)) throw new Error(`decisions API answered ${JSON.stringify(answer.name)} twice`);
@@ -182,19 +197,29 @@ export function toPiAnswer(q: PiQuestion, a: WireAnswer): PiAnswer {
 		return { type: "bool", probability: typeof a.probability === "number" ? a.probability : 0 };
 	}
 	if (q.type === "choice") {
+		// Every number handed to a caller is a real probability: a string or an
+		// out-of-range value would coerce into a verdict downstream.
+		const reported = (what: string, value: unknown): number => {
+			if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+				throw new ProtocolError(`decisions API reported ${what} as ${JSON.stringify(value)}`);
+			}
+			return value;
+		};
 		const offered = new Set(Object.keys(q.criteria));
 		const probabilities: Record<string, number> = {};
 		for (const { value, probability } of a.probabilities ?? []) {
 			if (typeof value !== "string" || !offered.has(value)) continue;
-			if (value in probabilities) throw new Error(`decisions API reported ${value} twice`);
-			probabilities[value] = probability;
+			if (value in probabilities) throw new ProtocolError(`decisions API reported ${value} twice`);
+			probabilities[value] = reported(`the probability of ${value}`, probability);
 		}
-		if (a.choice === undefined || a.choice === null) throw new Error("decisions API missing choice");
+		if (a.choice === undefined || a.choice === null) throw new ProtocolError("decisions API missing choice");
 		const choice = resolveChoice(q, a.choice);
-		if (!choice) throw new Error("decisions API returned an unknown choice");
+		if (!choice) throw new ProtocolError("decisions API returned an unknown choice");
 		// The label that authorizes an action has to be one the endpoint reported.
-		if (probabilities[choice] === undefined) throw new Error(`decisions API reported no probability for ${choice}`);
-		const confidence = typeof a.confidence === "number" ? a.confidence : probabilities[choice];
+		if (probabilities[choice] === undefined) {
+			throw new ProtocolError(`decisions API reported no probability for ${choice}`);
+		}
+		const confidence = typeof a.confidence === "number" ? reported("confidence", a.confidence) : probabilities[choice];
 		return { type: "choice", choice, probabilities, confidence };
 	}
 	const probabilities = a.probabilities ?? [];

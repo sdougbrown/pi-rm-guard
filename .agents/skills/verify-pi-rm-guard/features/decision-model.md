@@ -43,8 +43,11 @@ answered twice, a missing or unoffered choice, and a chosen label absent from
 the reported distribution are all API errors, not a fabricated first-option
 verdict. A sparse distribution reads the unreported labels as zero, so the
 chosen label's own entry is the one that has to be there.
-Classifier fallback applies only to the current request. A transient failure does
-not disable later three-way judgments; backend unit tests exercise recovery.
+Classifier fallback applies only to the current request, and only to a capability
+failure: a contract violation (a malformed answer, or the endpoint refusing the
+request) escalates, because the boolean probe would meet the same endpoint.
+A transient failure does not disable later three-way judgments; backend unit tests
+exercise recovery.
 A valid fallback approval can authorize execution after a failed choice probe;
 the failure itself never supplies permission.
 If the branch snapshot fails, the current request and raw command still reach

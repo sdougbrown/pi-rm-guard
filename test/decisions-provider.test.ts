@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { matchAnswers, requestDecisions, toPiAnswer, toWireQuestion } from "../src/decisions-provider.ts";
+import { matchAnswers, ProtocolError, requestDecisions, toPiAnswer, toWireQuestion } from "../src/decisions-provider.ts";
 
 test("bool questions map to predicate with criteria in the instructions", () => {
 	const wire = toWireQuestion("safe", {
@@ -233,6 +233,45 @@ test("more unnamed answers than unanswered questions is an error", () => {
 		{ type: "predicate", name: "a", probability: 0.9 },
 		{ type: "predicate", probability: 0.2 },
 	]).get("b")?.probability, 0.2);
+});
+
+test("a probability that is not a number in [0,1] is an error, not a coercion", () => {
+	const q = { type: "choice" as const, instructions: "", criteria: { approve: "safe", ask: "unclear" } };
+	for (const probability of ["0.99", 1.5, -0.1, Number.NaN] as unknown[]) {
+		assert.throws(
+			() => toPiAnswer(q, { type: "choice", choice: "approve", probabilities: [{ value: "approve", probability: probability as number }] }),
+			ProtocolError,
+			`probability ${JSON.stringify(probability)} must not reach a verdict`,
+		);
+	}
+	assert.throws(
+		() => toPiAnswer(q, { type: "choice", choice: "approve", confidence: 7, probabilities: [{ value: "approve", probability: 0.9 }] }),
+		ProtocolError,
+	);
+});
+
+test("an answer named with a non-string is a broken endpoint, not an unnamed one", () => {
+	const questions = [toWireQuestion("a", { type: "bool", instructions: "Is A?", criteria: { true: "yes", false: "no" } })];
+	assert.throws(
+		() => matchAnswers(questions, [{ type: "predicate", name: 7 as unknown as string, probability: 0.9 }]),
+		/non-string name/,
+	);
+});
+
+test("a request the endpoint refuses is a protocol error, so callers escalate", async () => {
+	await assert.rejects(
+		requestDecisions({ url: "u", model: "m", input: "x", questions: [], timeoutMs: 1000,
+			fetch: async () => new Response("old wire", { status: 422 }) }),
+		ProtocolError,
+	);
+	// A server failure may be transient; it is not a contract violation.
+	let err: Error | undefined;
+	try {
+		await requestDecisions({ url: "u", model: "m", input: "x", questions: [], timeoutMs: 1000,
+			fetch: async () => new Response("boom", { status: 500 }) });
+	} catch (e) { err = e as Error; }
+	assert.equal(err instanceof ProtocolError, false);
+	assert.match(err?.message ?? "", /\b500\b/);
 });
 
 test("a repeated offered value is an error, not a last write", () => {

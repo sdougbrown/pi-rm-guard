@@ -87,6 +87,8 @@ echo data > "$VICTIM/marker"
 
 cd "$CASE_DIR/workspace"
 set +e
+# pi has no --no-mcp flag; isolation from the operator's MCP servers and
+# extensions comes from the private agent directory this case points at.
 env -u RM_GUARD_BACKEND -u RM_GUARD_REGISTER_PROVIDER -u RM_GUARD_CLASSIFIER \
 	-u RM_GUARD_URL -u RM_GUARD_MODEL -u RM_GUARD_TIMEOUT_MS -u RM_GUARD_THRESHOLD \
 	-u RM_GUARD_API_KEY -u RM_GUARD_JEV_KEY_FILE \

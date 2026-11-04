@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { createClassifierBackend, createDecisionsBackend, type DecisionInput } from "../src/backends.ts";
-import { toWireQuestion } from "../src/decisions-provider.ts";
+import { ProtocolError, toWireQuestion } from "../src/decisions-provider.ts";
 
 const choiceResponse = (approve: number, ask: number, deny: number) =>
 	new Response(
@@ -331,6 +331,23 @@ test("backends reject malformed probabilities and honor the model's explicit cho
 		classify: async () => ({ answers: { action: { choice: "deny", probabilities: { approve: 0.51, ask: 0, deny: 0.49 } } } }),
 	});
 	assert.deepEqual(await classifier.decide(input()), { action: "defer", probability: 0.49, label: "deny" });
+});
+
+test("a protocol error on the choice probe escalates instead of re-probing with the bool question", async () => {
+	let calls = 0;
+	const backend = createClassifierBackend(fakeRegistry(), { provider: "decisions", modelId: "j", apiKey: undefined,
+		classify: async (_state, questions) => {
+			calls++;
+			if ("action" in (questions as Record<string, unknown>)) {
+				throw new ProtocolError("decisions API reported approve twice");
+			}
+			return { answers: { safe: { probability: 0.9 } }, stopReason: "stop" };
+		},
+	});
+	const result = await backend.decide(input("rm -rf /"));
+	assert.ok("error" in result);
+	assert.match(result.error, /reported approve twice/);
+	assert.equal(calls, 1, "the bool probe must not run on a contract violation");
 });
 
 test("the decisions request aborts instead of accepting a late approval", async () => {
