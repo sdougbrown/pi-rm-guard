@@ -288,7 +288,9 @@ test("a request the endpoint refuses is a protocol error, so callers escalate", 
 			fetch: async () => new Response("old wire", { status: 422 }) }),
 		ProtocolError,
 	);
-	// A server failure may be transient; it is not a contract violation.
+	// A server failure may be transient; it is not a contract violation, and the
+	// message must stay out from under the protocol marker so the fallback that
+	// reads it does not mistake the two.
 	let err: Error | undefined;
 	try {
 		await requestDecisions({ url: "u", model: "m", input: "x", questions: [], timeoutMs: 1000,
@@ -296,6 +298,7 @@ test("a request the endpoint refuses is a protocol error, so callers escalate", 
 	} catch (e) { err = e as Error; }
 	assert.equal(err instanceof ProtocolError, false);
 	assert.match(err?.message ?? "", /\b500\b/);
+	assert.equal((err?.message ?? "").startsWith(PROTOCOL_MARK), false);
 });
 
 test("a repeated offered value is an error, not a last write", () => {

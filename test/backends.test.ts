@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { createClassifierBackend, createDecisionsBackend, type DecisionInput } from "../src/backends.ts";
-import { ProtocolError, registerDecisionsProvider, toWireQuestion } from "../src/decisions-provider.ts";
+import { ProtocolError, PROTOCOL_MARK, registerDecisionsProvider, toWireQuestion } from "../src/decisions-provider.ts";
 
 const choiceResponse = (approve: number, ask: number, deny: number) =>
 	new Response(
@@ -355,6 +355,29 @@ test("the registry route escalates a contract violation in production shape", as
 	assert.ok("error" in result);
 	assert.match(result.error, /reported approve twice/);
 	assert.equal(registryCalls, 1, "the boolean probe must not run on a contract violation");
+});
+
+test("a transient 5xx still takes the boolean fallback on the registry route", async (t) => {
+	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {
+		providerClassify = config.classifiers["decisions-v2"].classify;
+	} };
+	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"] });
+	assert.ok(providerClassify);
+	let httpCalls = 0;
+	t.mock.method(globalThis, "fetch", async () => {
+		httpCalls++;
+		// One transient failure, then the endpoint answers the boolean probe.
+		if (httpCalls === 1) return new Response("upstream hiccup", { status: 502 });
+		return new Response(JSON.stringify({ answers: [{ type: "predicate", name: "safe", probability: 0.9 }] }));
+	});
+	const registry = {
+		findOfType: () => ({ id: "m" }),
+		classify: async (model: unknown, ctx: unknown) => providerClassify!(model, ctx),
+	};
+	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
+	assert.deepEqual(await backend.decide(input("rm -rf /")), { action: "approve", probability: 0.9, label: "approve" });
+	assert.equal(httpCalls, 2, "the boolean probe must run after a transient failure");
 });
 
 test("a contract violation on the boolean probe escalates rather than crashing the guard", async () => {

@@ -87,9 +87,10 @@ export async function requestDecisions(options: {
 	});
 	if (!response.ok) {
 		// A 4xx refuses the request itself, so no other question would fare
-		// better; a 5xx may be transient.
+		// better; a 5xx may be transient. The wording keeps the 5xx out from
+		// under the protocol marker, so a transient failure can still fall back.
 		if (response.status < 500) throw new ProtocolError(`HTTP ${response.status}`);
-		throw new Error(`decisions API ${response.status}`);
+		throw new Error(`the decisions endpoint returned ${response.status}`);
 	}
 	return await response.json() as { answers?: WireAnswer[] };
 }
