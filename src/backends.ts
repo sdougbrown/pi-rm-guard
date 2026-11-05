@@ -2,7 +2,7 @@
  * Decision backends judge a raw command from session evidence.
  * Only valid model responses authorize execution; without one, errors escalate.
  */
-import { matchAnswers, ProtocolError, PROTOCOL_MARK, requestDecisions, resolveChoice, toPiAnswer, toWireQuestion } from "./decisions-provider.ts";
+import { matchAnswers, ProtocolError, PROTOCOL_MARK_PREFIX, requestDecisions, resolveChoice, toPiAnswer, toWireQuestion } from "./decisions-provider.ts";
 
 export interface DecisionInput {
 	/** The raw, unmodified command text — no parsing or target resolution. */
@@ -174,8 +174,8 @@ export function createClassifierBackend(
 			// pi's registry flattens a thrown provider error into an error result
 			// that keeps only the message text. A contract violation must not look
 			// like a missing capability, so the marker re-derives the type here.
-			if (result.errorMessage?.startsWith(PROTOCOL_MARK)) {
-				throw new ProtocolError(result.errorMessage.slice(PROTOCOL_MARK.length + 1));
+			if (result.errorMessage?.startsWith(PROTOCOL_MARK_PREFIX)) {
+				throw new ProtocolError(result.errorMessage.slice(PROTOCOL_MARK_PREFIX.length));
 			}
 			throw new Error(result.errorMessage ?? "classifier returned no answer");
 		}

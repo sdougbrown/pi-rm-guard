@@ -116,13 +116,20 @@ export type PiAnswer = PiChoiceAnswer | PiScoreAnswer | PiBoolAnswer;
 export const PROTOCOL_MARK = "decisions API";
 
 /**
+ * The full prefix a ProtocolError message carries. The classifier route
+ * re-derives the type from the flattened message text, so the separator lives
+ * here, next to the constructor that writes it.
+ */
+export const PROTOCOL_MARK_PREFIX = `${PROTOCOL_MARK}: `;
+
+/**
  * A response that violates the Decisions contract: a malformed answer, or a
  * request the endpoint refused. Retrying with a different question cannot fix
  * it, so callers must escalate instead of falling back.
  */
 export class ProtocolError extends Error {
 	constructor(message: string) {
-		super(`${PROTOCOL_MARK}: ${message}`);
+		super(`${PROTOCOL_MARK_PREFIX}${message}`);
 	}
 }
 
@@ -150,6 +157,7 @@ export type PiQuestion = PiChoiceQuestion | PiScoreQuestion | PiBoolQuestion;
  * question's verdict.
  */
 export function matchAnswers(questions: WireQuestion[], answers: WireAnswer[]): Map<string, WireAnswer> {
+	if (!Array.isArray(answers)) throw new ProtocolError("returned the answers keyed by name, not as a list");
 	const asked = new Set(questions.map((q) => q.name));
 	const byName = new Map<string, WireAnswer>();
 	for (const answer of answers) {

@@ -322,98 +322,103 @@ test("backends reject malformed probabilities and honor the model's explicit cho
 	assert.deepEqual(await classifier.decide(input()), { action: "defer", probability: 0.49, label: "deny" });
 });
 
-test("the registry route escalates a contract violation in production shape", async (t) => {
-	// In production the provider's classify runs behind pi's model registry,
-	// which flattens a thrown error into an error result that keeps only the
-	// message text. Emulate that around the real provider and assert the guard
-	// still escalates instead of falling back to the boolean probe.
-	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+type FetchImpl = (input: unknown, init?: RequestInit) => Promise<Response>;
+
+/**
+ * The registered provider behind a registry that flattens thrown errors the
+ * way pi's model registry does. `fetchImpl` stands in for the wire; `onClassify`
+ * counts registry round-trips where a test cares about them.
+ */
+function registryRoute(
+	t: { mock: { method: (...args: any[]) => any } },
+	fetchImpl: FetchImpl,
+	onClassify?: () => void,
+) {
+	let classify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
 	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {
-		providerClassify = config.classifiers["decisions-v2"].classify;
+		classify = config.classifiers["decisions-v2"].classify;
 	} };
 	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"] });
-	assert.ok(providerClassify);
-	let registryCalls = 0;
+	assert.ok(classify);
 	const registry = {
 		findOfType: () => ({ id: "m" }),
 		classify: async (model: unknown, ctx: unknown) => {
-			registryCalls++;
+			onClassify?.();
 			try {
-				return await providerClassify!(model, ctx);
+				return await classify!(model, ctx);
 			} catch (err) {
 				return { answers: {}, stopReason: "error", errorMessage: err instanceof Error ? err.message : String(err) };
 			}
 		},
 	};
-	t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [
+	t.mock.method(globalThis, "fetch", fetchImpl as never);
+	return createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
+}
+
+test("the registry route escalates a contract violation in production shape", async (t) => {
+	// In production the provider's classify runs behind pi's model registry,
+	// which flattens a thrown error into an error result that keeps only the
+	// message text. Emulate that around the real provider and assert the guard
+	// still escalates instead of falling back to the boolean probe.
+	let registryCalls = 0;
+	const backend = registryRoute(t, async () => new Response(JSON.stringify({ answers: [{ type: "choice", name: "action", choice: "approve", probabilities: [
 		{ value: "approve", probability: 0.2 },
 		{ value: "approve", probability: 0.99 },
 		{ value: "ask", probability: 0.01 },
-	] }] })));
-	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
+	] }] })), () => registryCalls++);
 	const result = await backend.decide(input("rm -rf /"));
 	assert.ok("error" in result);
 	assert.match(result.error, /reported approve twice/);
 	assert.equal(registryCalls, 1, "the boolean probe must not run on a contract violation");
 });
 
-test("a transient 5xx still takes the boolean fallback on the registry route", async (t) => {
-	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
-	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {
-		providerClassify = config.classifiers["decisions-v2"].classify;
-	} };
-	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"] });
-	assert.ok(providerClassify);
+test("a transient choice failure then a refused boolean probe escalates through the registry route", async (t) => {
 	let httpCalls = 0;
-	t.mock.method(globalThis, "fetch", async () => {
+	const backend = registryRoute(t, async () => {
+		httpCalls++;
+		// The choice probe rides out a transient failure; the boolean probe then
+		// meets an endpoint that refuses the request itself.
+		if (httpCalls === 1) return new Response("upstream hiccup", { status: 502 });
+		return new Response("old wire", { status: 422 });
+	});
+	const result = await backend.decide(input("rm -rf /"));
+	assert.ok("error" in result);
+	assert.equal(result.error, "decisions API: HTTP 422");
+	assert.equal(httpCalls, 2);
+});
+
+test("a keyed pre-OpenAI response escalates without a boolean re-probe", async (t) => {
+	let registryCalls = 0;
+	const backend = registryRoute(t, async () => new Response(JSON.stringify({ answers: { action: { choice: "A", probabilities: { A: 0.95 } } } })), () => registryCalls++);
+	const result = await backend.decide(input("rm -rf /"));
+	assert.ok("error" in result);
+	assert.match(result.error, /keyed by name/);
+	assert.equal(registryCalls, 1, "the boolean probe must not run against a broken endpoint");
+});
+
+test("a transient 5xx still takes the boolean fallback on the registry route", async (t) => {
+	let httpCalls = 0;
+	// Flatten the way pi's registry does, so the marker re-derivation in
+	// classifyVia is on the path this test pins: a wording regression that
+	// puts a 5xx under the protocol marker would fail here.
+	const backend = registryRoute(t, async () => {
 		httpCalls++;
 		// One transient failure, then the endpoint answers the boolean probe.
 		if (httpCalls === 1) return new Response("upstream hiccup", { status: 502 });
 		return new Response(JSON.stringify({ answers: [{ type: "predicate", name: "safe", probability: 0.9 }] }));
 	});
-	const registry = {
-		findOfType: () => ({ id: "m" }),
-		// Flatten the way pi's registry does, so the marker re-derivation in
-		// classifyVia is on the path this test pins: a wording regression that
-		// puts a 5xx under the protocol marker would fail here.
-		classify: async (model: unknown, ctx: unknown) => {
-			try {
-				return await providerClassify!(model, ctx);
-			} catch (err) {
-				return { answers: {}, stopReason: "error", errorMessage: err instanceof Error ? err.message : String(err) };
-			}
-		},
-	};
-	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
 	assert.deepEqual(await backend.decide(input("rm -rf /")), { action: "approve", probability: 0.9, label: "approve" });
 	assert.equal(httpCalls, 2, "the boolean probe must run after a transient failure");
 });
 
 test("a rate limit is transient: the fallback rides it out on the registry route", async (t) => {
-	let providerClassify: ((model: unknown, ctx: unknown) => Promise<unknown>) | undefined;
-	const pi = { registerProvider(_name: string, config: { classifiers: Record<string, { classify: (m: unknown, c: unknown) => Promise<unknown> }> }) {
-		providerClassify = config.classifiers["decisions-v2"].classify;
-	} };
-	registerDecisionsProvider(pi as never, { baseUrl: "http://test/v1", models: ["m"] });
-	assert.ok(providerClassify);
 	let httpCalls = 0;
-	t.mock.method(globalThis, "fetch", async () => {
+	const backend = registryRoute(t, async () => {
 		httpCalls++;
 		// One rate-limited response, then the endpoint answers the boolean probe.
 		if (httpCalls === 1) return new Response("slow down", { status: 429 });
 		return new Response(JSON.stringify({ answers: [{ type: "predicate", name: "safe", probability: 0.9 }] }));
 	});
-	const registry = {
-		findOfType: () => ({ id: "m" }),
-		classify: async (model: unknown, ctx: unknown) => {
-			try {
-				return await providerClassify!(model, ctx);
-			} catch (err) {
-				return { answers: {}, stopReason: "error", errorMessage: err instanceof Error ? err.message : String(err) };
-			}
-		},
-	};
-	const backend = createClassifierBackend(registry as never, { provider: "decisions", modelId: "m", apiKey: undefined });
 	assert.deepEqual(await backend.decide(input("rm -rf /")), { action: "approve", probability: 0.9, label: "approve" });
 	assert.equal(httpCalls, 2, "the boolean probe must run after a rate limit");
 });
