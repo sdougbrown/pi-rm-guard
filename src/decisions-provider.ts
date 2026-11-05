@@ -116,13 +116,20 @@ export type PiAnswer = PiChoiceAnswer | PiScoreAnswer | PiBoolAnswer;
 export const PROTOCOL_MARK = "decisions API";
 
 /**
+ * The full prefix a ProtocolError message carries. The classifier route
+ * re-derives the type from the flattened message text, so the separator lives
+ * here, next to the constructor that writes it.
+ */
+export const PROTOCOL_MARK_PREFIX = `${PROTOCOL_MARK}: `;
+
+/**
  * A response that violates the Decisions contract: a malformed answer, or a
  * request the endpoint refused. Retrying with a different question cannot fix
  * it, so callers must escalate instead of falling back.
  */
 export class ProtocolError extends Error {
 	constructor(message: string) {
-		super(`${PROTOCOL_MARK}: ${message}`);
+		super(`${PROTOCOL_MARK_PREFIX}${message}`);
 	}
 }
 
